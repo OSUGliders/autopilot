@@ -3,3 +3,4 @@ __pycache__
 .pytest_cache
 20180724_20180806
 sim_output/
+example_logs/
