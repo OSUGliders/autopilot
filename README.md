@@ -1,0 +1,52 @@
+# autopilot
+
+Shore-side autopilot for Slocum gliders following drifting floats:
+detect each surfacing, predict where the drifter will be when the
+glider arrives, validate the waypoint against a geofence, and send it
+— built on the `sfmc-follow` framework from
+[sfmc-api](https://github.com/mousebrains/SFMC-API-Python).
+
+## Layout
+
+- `src/autopilot/follower.py` — piloting logic (sfmc-follow plugin):
+  newest prediction file → drifter position at glider arrival time →
+  `goto_l10.ma`, plus per-surfacing map and timestamped .ma archive.
+- `src/autopilot/safety.py` — geofence + waypoint validation: inside
+  `boundaries/RIOT_boundary.geojson` minus margin, leg stays inside,
+  prediction fresh, jump plausible. Any failure commands the
+  configured safe point instead (FALLBACK, red-flagged in logs/plots).
+- `src/autopilot/sim/` — simulation machinery: mock/real drifter
+  truth (incl. MIT RIOT MAT tracks), 6-hourly prediction files
+  (24 h hindcast + 12 h forecast, 2-h steps), closed-loop stepper
+  (0.25 m/s, fixed-heading dives with overshoot, random surfacing
+  offset ≤ 250 m per hour underwater).
+- `osu999_config.yaml` — runtime config (speed, fence,
+  safe point, thresholds, paths).
+- `tests/` — geofence unit tests + closed-loop regressions against a
+  recorded float-6000 track fixture (`uv run pytest`).
+- `examples/simple_demo/` — minimal first example (fixed waypoint
+  list, replayed mock dialog).
+
+## Simulate
+
+```sh
+uv run autopilot-sim --follow-hours 72   # closed loop vs simulated float 6000
+# Options: --synthetic, --float-id, --start-hour, --follow-hours
+# Writes everything under sim_output/ (predictions, plots, .ma archive, dialog log)
+
+uv run autopilot-mock-data               # synthetic open-loop demo data
+uv run sfmc-follow --glider osu999 --follower src/autopilot/follower.py \
+    --config osu999_config.yaml --replay predicted_dialog.log --dry-run
+```
+
+## Run live
+
+```sh
+uv run sfmc-follow --glider <name> --follower src/autopilot/follower.py \
+    --config osu999_config.yaml
+```
+
+Add `--dry-run` first to watch without uploading. The glider's mission
+must run `goto_list` with `args_from_file` matching `sequence_number`
+in the config (10 → `goto_l10.ma`). Capture a real dialog log with
+`uv run sfmc-monitor-glider --glider <name> --logfile dialog.log`.

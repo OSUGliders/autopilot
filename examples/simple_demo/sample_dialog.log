@@ -1,0 +1,27 @@
+Carrier Detect found
+Vehicle Name: osu999
+Curr Time: Wed Jul 01 14:00:12 2026 MT:  10120
+GPS Location:  4439.000 N -12427.000 E measured     32.100 secs ago
+sensor:m_water_vx(m/s)=0.040895           35.200 secs ago
+sensor:m_water_vy(m/s)=-0.018732          35.200 secs ago
+sensor:m_battery(volts)=13.2117           10.000 secs ago
+sensor:m_vacuum(inHg)=7.89100              2.000 secs ago
+ABORT HISTORY: none
+Carrier Detect found
+Vehicle Name: osu999
+Curr Time: Wed Jul 01 16:30:45 2026 MT:  19153
+GPS Location:  4436.120 N -12430.000 E measured     28.500 secs ago
+sensor:m_water_vx(m/s)=0.021340           31.000 secs ago
+sensor:m_water_vy(m/s)=0.005112           31.000 secs ago
+sensor:m_battery(volts)=13.1050           12.000 secs ago
+sensor:m_vacuum(inHg)=7.90200              3.000 secs ago
+ABORT HISTORY: none
+Carrier Detect found
+Vehicle Name: osu999
+Curr Time: Wed Jul 01 19:02:03 2026 MT:  28231
+GPS Location:  4436.000 N -12431.200 E measured     41.700 secs ago
+sensor:m_water_vx(m/s)=-0.012400          44.100 secs ago
+sensor:m_water_vy(m/s)=0.030220           44.100 secs ago
+sensor:m_battery(volts)=13.0410           11.000 secs ago
+sensor:m_vacuum(inHg)=7.88500              2.500 secs ago
+ABORT HISTORY: none

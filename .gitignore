@@ -1,0 +1,5 @@
+__pycache__
+.venv
+.pytest_cache
+20180724_20180806
+sim_output/

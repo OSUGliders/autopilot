@@ -1,0 +1,46 @@
+# Configuration for autopilot.follower (PredictedTrackFollower).
+
+# Directory containing prediction files named drifter_YYYYmmddTHHMM.csv
+# (creation time in the name).  Each file: time,latitude,longitude rows
+# covering 24 h before to 12 h after creation, in 2-hour steps.
+predictions_dir: predictions
+pattern: "drifter_*.csv"
+
+# Glider horizontal through-water speed (m/s), used to predict where
+# the drifter will be when the glider arrives.
+speed_horizontal: 0.25
+
+# Desired maximum separation from the drifter (km); logged only.
+target_radius_km: 4.0
+
+# Sequence number N for the generated goto_l{N}.ma file.
+sequence_number: 10
+
+# ── Safety layer ────────────────────────────────────────────────
+# Waypoints must lie inside this polygon (GeoJSON, drawn in advance
+# over deep water) shrunk by fence_margin_km; the glider→waypoint leg
+# must not exit the polygon.
+geofence: boundaries/RIOT_boundary.geojson
+fence_margin_km: 2.0
+
+# Fallback commanded when no safe waypoint can be generated
+# (outside fence, stale prediction, implausible jump): [lon, lat].
+# Must lie inside the buffered fence (checked at startup).
+safe_point: [-120.07, 33.58]
+
+# Reject predictions older than this (hours).
+max_prediction_age_h: 12
+
+# Reject waypoints further than this from the glider (km).
+max_waypoint_jump_km: 30
+
+# Directory for the per-surfacing plot saved as {glider}_{time}.png.
+plot_dir: plots
+
+# Optional GEBCO bathymetry netCDF for depth contours on the plots
+# (subset to the plotted region automatically; omit to disable).
+bathymetry: bathymetry/gebco_2026_n35.0_s32.0_w-122.0_e-117.0.nc
+
+# Directory for timestamped archive copies of every .ma file sent
+# (e.g. goto_l10_20260702T120000.ma).
+archive_dir: goto_archive

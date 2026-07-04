@@ -1,0 +1,31 @@
+[project]
+name = "autopilot"
+version = "0.1.0"
+description = "Shore-side autopilot for Slocum gliders following drifting floats via SFMC"
+requires-python = ">=3.12"
+dependencies = [
+    "matplotlib>=3.11.0",
+    "numpy>=2.5.0",
+    "pyyaml>=6.0.3",
+    "scipy>=1.18.0",
+    "sfmc-api",
+    "shapely>=2.1.2",
+    "xarray>=2026.4.0",
+]
+
+[project.scripts]
+autopilot-sim = "autopilot.sim.closed_loop:main"
+autopilot-mock-data = "autopilot.sim.mock_data:main"
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.3.0",
+    "pytest>=8",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+sfmc-api = { git = "https://github.com/mousebrains/SFMC-API-Python" }

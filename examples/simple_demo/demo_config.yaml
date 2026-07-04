@@ -1,0 +1,21 @@
+# Configuration for demo_follower.py (TrackFollower).
+#
+# track: ordered list of [longitude, latitude] waypoints in decimal
+# degrees.  The follower sends the current target every surfacing and
+# advances to the next waypoint once the glider surfaces within
+# arrival_radius_m of it.
+#
+# These example waypoints are a short line off Newport, OR.
+track:
+  - [-124.5000, 44.6000]
+  - [-124.5500, 44.6000]
+  - [-124.5500, 44.6500]
+
+# Consider a waypoint reached when the glider surfaces within this
+# distance of it (metres).
+arrival_radius_m: 500
+
+# Sequence number N for the generated goto_l{N}.ma file.  Must match
+# the args_from_file slot used by the goto_list behavior in the
+# glider's mission file.
+sequence_number: 10
