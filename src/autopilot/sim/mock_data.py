@@ -164,7 +164,9 @@ def write_dialog(truth: dict[float, tuple[float, float]]) -> None:
         t = TRUTH_START + timedelta(hours=t_h)
         v_east, v_north = drifter_velocity(t_h)
         mt = int((t_h - SURFACING_TIMES_H[0]) * 3600 + 5000)
-        lines += dialog_block(GLIDER_NAME, t, lat, lon, v_east, v_north, mt, 13.2 - 0.02 * i)
+        lines += dialog_block(
+            GLIDER_NAME, t, lat, lon, v_east, v_north, mt, 13.2 - 0.02 * i
+        )
         # Pursue the drifter's true position at this surfacing for 3 h.
         target_lat, target_lon = truth[float(t_h)]
         dx = (target_lon - lon) * M_PER_DEG_LAT * math.cos(math.radians(lat))
@@ -172,7 +174,13 @@ def write_dialog(truth: dict[float, tuple[float, float]]) -> None:
         dist = math.hypot(dx, dy)
         travel = min(dist, GLIDER_SPEED * 3 * 3600)
         if dist > 0:
-            lat, lon = step(lat, lon, dx / dist * GLIDER_SPEED, dy / dist * GLIDER_SPEED, travel / GLIDER_SPEED)
+            lat, lon = step(
+                lat,
+                lon,
+                dx / dist * GLIDER_SPEED,
+                dy / dist * GLIDER_SPEED,
+                travel / GLIDER_SPEED,
+            )
     Path("predicted_dialog.log").write_text("\n".join(lines) + "\n")
     print(f"Wrote predicted_dialog.log ({len(SURFACING_TIMES_H)} surfacings)")
 

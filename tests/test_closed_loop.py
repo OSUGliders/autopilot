@@ -35,8 +35,11 @@ def glider_start(truth):
 
 
 def commanded_safe_point(waypoints):
-    return [w for w in waypoints if abs(w[0] - SAFE_POINT[0]) < 1e-3
-            and abs(w[1] - SAFE_POINT[1]) < 1e-3]
+    return [
+        w
+        for w in waypoints
+        if abs(w[0] - SAFE_POINT[0]) < 1e-3 and abs(w[1] - SAFE_POINT[1]) < 1e-3
+    ]
 
 
 def test_normal_tracking_72h(truth, tmp_path):
@@ -46,7 +49,7 @@ def test_normal_tracking_72h(truth, tmp_path):
     assert not commanded_safe_point(result["waypoints"])
 
     seps = result["separations"]
-    settled = seps[len(seps) // 2:]
+    settled = seps[len(seps) // 2 :]
     target = result["config"]["target_radius_km"]
     assert sum(settled) / len(settled) < 2.5
     assert all(s <= target for s in settled)

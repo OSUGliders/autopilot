@@ -39,6 +39,29 @@ uv run sfmc-follow --glider osu999 --follower src/autopilot/follower.py \
     --config osu999_config.yaml --replay predicted_dialog.log --dry-run
 ```
 
+## Replay real deployment logs
+
+Replays a past deployment's Iridium dialog through the follower as if
+it were happening live. The setup script stitches the per-call
+network logs (e.g. `examples_logs/sl684/*.log`) in time order, parses
+the glider's real surfaced positions, and — since these deployments
+had no drifter — smooths that track into a stand-in "drifter",
+writing 6-hourly prediction files, a rectangular test fence, and a
+config. The replay then feeds the raw dialog to the follower, which
+makes its usual waypoint/safety decisions and writes a plot and .ma
+file per surfacing.
+
+```sh
+uv run python examples/replay_real_logs.py examples_logs/sl684 replay_sl684
+uv run sfmc-follow --glider osu684 --follower src/autopilot/follower.py \
+    --config replay_sl684/replay_config.yaml --replay replay_sl684/dialog.log \
+    --replay-interval 0 --dry-run
+# Plots in replay_sl684/plots/, goto files in replay_sl684/goto_archive/
+```
+
+`--replay-interval 0` disables the default 10 s pause between
+surfacings (keep it to watch the replay unfold).
+
 ## Run live
 
 ```sh

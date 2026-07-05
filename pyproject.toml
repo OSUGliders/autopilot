@@ -21,6 +21,7 @@ autopilot-mock-data = "autopilot.sim.mock_data:main"
 dev = [
     "ipykernel>=7.3.0",
     "pytest>=8",
+    "ruff>=0.15.20",
 ]
 
 [build-system]

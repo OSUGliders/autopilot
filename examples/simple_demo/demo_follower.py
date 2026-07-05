@@ -37,7 +37,10 @@ def distance_m(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
     dphi = phi2 - phi1
     dlam = math.radians(lon2 - lon1)
-    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2
+    a = (
+        math.sin(dphi / 2) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2
+    )
     return 2 * EARTH_RADIUS_M * math.asin(math.sqrt(a))
 
 
@@ -85,4 +88,6 @@ class TrackFollower(BaseFollower):
             sequence_number=self.sequence_number,
         )
         self.send_files(to_glider={filename: content})
-        logger.info("Queued %s -> waypoint %.4f, %.4f", filename, target_lat, target_lon)
+        logger.info(
+            "Queued %s -> waypoint %.4f, %.4f", filename, target_lat, target_lon
+        )

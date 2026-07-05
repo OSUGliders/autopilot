@@ -36,7 +36,9 @@ class Verdict:
     """Outcome of the safety checks for one candidate waypoint."""
 
     ok: bool
-    reason: str  # OK, NO_PREDICTION, STALE, GLIDER_OUTSIDE, FENCE_WAYPOINT, FENCE_LEG, JUMP
+    reason: (
+        str  # OK, NO_PREDICTION, STALE, GLIDER_OUTSIDE, FENCE_WAYPOINT, FENCE_LEG, JUMP
+    )
     detail: str = ""
 
 
@@ -80,12 +82,16 @@ class Geofence:
     # ── Local km frame ──────────────────────────────────────────
 
     def _to_km(self, x, y):
-        return ((x - self._lon0) * self._cos * KM_PER_DEG_LAT,
-                (y - self._lat0) * KM_PER_DEG_LAT)
+        return (
+            (x - self._lon0) * self._cos * KM_PER_DEG_LAT,
+            (y - self._lat0) * KM_PER_DEG_LAT,
+        )
 
     def _from_km(self, x, y):
-        return (x / (self._cos * KM_PER_DEG_LAT) + self._lon0,
-                y / KM_PER_DEG_LAT + self._lat0)
+        return (
+            x / (self._cos * KM_PER_DEG_LAT) + self._lon0,
+            y / KM_PER_DEG_LAT + self._lat0,
+        )
 
     # ── Queries ─────────────────────────────────────────────────
 
@@ -140,19 +146,22 @@ def check_waypoint(
         return Verdict(False, "NO_PREDICTION", "no usable prediction file")
     if prediction_age_h is not None and prediction_age_h > max_age_h:
         return Verdict(
-            False, "STALE",
+            False,
+            "STALE",
             f"prediction is {prediction_age_h:.1f} h old (max {max_age_h:.0f} h)",
         )
     wpt_lon, wpt_lat = waypoint
     if fence is not None:
         if not fence.contains(glider_lon, glider_lat):
             return Verdict(
-                False, "GLIDER_OUTSIDE",
+                False,
+                "GLIDER_OUTSIDE",
                 f"glider at {glider_lat:.4f}, {glider_lon:.4f} is outside the fence",
             )
         if not fence.contains_buffered(wpt_lon, wpt_lat):
             return Verdict(
-                False, "FENCE_WAYPOINT",
+                False,
+                "FENCE_WAYPOINT",
                 f"waypoint {wpt_lat:.4f}, {wpt_lon:.4f} is outside the fence "
                 f"minus {fence.margin_km:.1f} km margin",
             )
@@ -161,7 +170,8 @@ def check_waypoint(
     jump_km = _distance_km(glider_lon, glider_lat, wpt_lon, wpt_lat)
     if jump_km > max_jump_km:
         return Verdict(
-            False, "JUMP",
+            False,
+            "JUMP",
             f"waypoint is {jump_km:.0f} km away (max {max_jump_km:.0f} km)",
         )
     return Verdict(True, "OK")

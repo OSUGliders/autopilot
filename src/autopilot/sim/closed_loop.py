@@ -19,6 +19,7 @@ from queue import Queue
 from typing import Any
 
 import yaml
+from sfmc_api import SensorReading, SurfacingEvent, dddmm_to_decimal
 
 from autopilot.follower import PredictedTrackFollower, distance_m
 from autopilot.sim.mock_data import (
@@ -33,7 +34,6 @@ from autopilot.sim.mock_data import (
     truth_velocity,
     write_predictions,
 )
-from sfmc_api import SensorReading, SurfacingEvent, dddmm_to_decimal
 
 GLIDER_SPEED = 0.25  # m/s through water
 MAX_OFFSET_M_PER_H = 250.0  # random surfacing offset per hour underwater
@@ -96,17 +96,21 @@ def run_sim(
             config[key] = str(config_path.parent / config[key])
     # Output dirs keep their configured names but are sandboxed under
     # out_root so a sim run can never mix with live operational output.
-    for key, default in (("predictions_dir", "predictions"),
-                         ("plot_dir", "plots"),
-                         ("archive_dir", "ma_archive")):
+    for key, default in (
+        ("predictions_dir", "predictions"),
+        ("plot_dir", "plots"),
+        ("archive_dir", "ma_archive"),
+    ):
         config[key] = str(out_root / Path(config.get(key, default)).name)
 
     # First surfacing is 24 h into the truth window (so the first
     # prediction file has a full hindcast); predictions every 6 h after.
     prediction_times = [24 + 6 * k for k in range(int(follow_hours / 6) + 1)]
     n_surfacings = int(follow_hours / INTERVAL_H) + 1
-    print(f"Following for {follow_hours:.0f} h: {n_surfacings} surfacings, "
-          f"{len(prediction_times)} prediction files")
+    print(
+        f"Following for {follow_hours:.0f} h: {n_surfacings} surfacings, "
+        f"{len(prediction_times)} prediction files"
+    )
     write_predictions(truth, prediction_times, outdir=config["predictions_dir"])
     # Fixed plot extent for the whole run: full truth track + 6 km margin
     # (in live use this would be set in the config, e.g. the operating area).
@@ -117,8 +121,12 @@ def run_sim(
         t_lats.append(config["safe_point"][1])
     pad_lat = 6000.0 / M_PER_DEG_LAT
     pad_lon = pad_lat / math.cos(math.radians(sum(t_lats) / len(t_lats)))
-    config["plot_bounds"] = [min(t_lons) - pad_lon, max(t_lons) + pad_lon,
-                             min(t_lats) - pad_lat, max(t_lats) + pad_lat]
+    config["plot_bounds"] = [
+        min(t_lons) - pad_lon,
+        max(t_lons) + pad_lon,
+        min(t_lats) - pad_lat,
+        max(t_lats) + pad_lat,
+    ]
 
     queue_in: Queue = Queue()
     queue_out: Queue = Queue()
@@ -139,15 +147,19 @@ def run_sim(
         # Record this surfacing in the dialog log.
         v_east, v_north = truth_velocity(truth, t_h)
         mt = int((t_h - 24.0) * 3600 + 5000)
-        lines += dialog_block(GLIDER_NAME, t, lat, lon, v_east, v_north, mt, 13.2 - 0.02 * i)
+        lines += dialog_block(
+            GLIDER_NAME, t, lat, lon, v_east, v_north, mt, 13.2 - 0.02 * i
+        )
         glider_track.append((lat, lon))
 
         # Separation from the *true* drifter position (the score).
         d_lat, d_lon = truth[t_h]
         sep_km = distance_m(lon, lat, d_lon, d_lat) / 1000
         separations.append(sep_km)
-        print(f"--- surfacing {i + 1}/{n_surfacings} at {t:%dT%H:%M}: "
-              f"true separation {sep_km:.1f} km")
+        print(
+            f"--- surfacing {i + 1}/{n_surfacings} at {t:%dT%H:%M}: "
+            f"true separation {sep_km:.1f} km"
+        )
 
         # Hand the surfacing to the real follower and collect its goto file.
         event = SurfacingEvent(
@@ -180,8 +192,13 @@ def run_sim(
             dist = math.hypot(dx, dy)
             if dist > 0:
                 dive_time = INTERVAL_H * 3600
-                lat, lon = step(lat, lon, dx / dist * GLIDER_SPEED,
-                                dy / dist * GLIDER_SPEED, dive_time)
+                lat, lon = step(
+                    lat,
+                    lon,
+                    dx / dist * GLIDER_SPEED,
+                    dy / dist * GLIDER_SPEED,
+                    dive_time,
+                )
 
         # Random surfacing offset: up to 250 m per hour underwater.
         r = rng.uniform(0, MAX_OFFSET_M_PER_H * INTERVAL_H)
@@ -191,15 +208,19 @@ def run_sim(
     dialog_path = out_root / "closed_loop_dialog.log"
     dialog_path.write_text("\n".join(lines) + "\n")
 
-    settled = separations[len(separations) // 2:]
+    settled = separations[len(separations) // 2 :]
     print(f"\nWrote {dialog_path} ({n_surfacings} surfacings)")
-    print(f"Separation: start {separations[0]:.1f} km, "
-          f"final {separations[-1]:.1f} km, "
-          f"second-half mean {sum(settled) / len(settled):.1f} km, "
-          f"max {max(settled):.1f} km")
+    print(
+        f"Separation: start {separations[0]:.1f} km, "
+        f"final {separations[-1]:.1f} km, "
+        f"second-half mean {sum(settled) / len(settled):.1f} km, "
+        f"max {max(settled):.1f} km"
+    )
     within = sum(1 for s in settled if s <= config["target_radius_km"])
-    print(f"Second-half surfacings within {config['target_radius_km']:.0f} km: "
-          f"{within}/{len(settled)}")
+    print(
+        f"Second-half surfacings within {config['target_radius_km']:.0f} km: "
+        f"{within}/{len(settled)}"
+    )
 
     return {
         "separations": separations,
@@ -211,16 +232,30 @@ def run_sim(
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--synthetic", action="store_true",
-                    help="use the synthetic curving drifter instead of the MAT track")
-    ap.add_argument("--config", default=DEFAULT_CONFIG,
-                    help="follower config YAML (default: %(default)s)")
+    ap.add_argument(
+        "--synthetic",
+        action="store_true",
+        help="use the synthetic curving drifter instead of the MAT track",
+    )
+    ap.add_argument(
+        "--config",
+        default=DEFAULT_CONFIG,
+        help="follower config YAML (default: %(default)s)",
+    )
     ap.add_argument("--mat", default=DEFAULT_MAT, help="float trajectory MAT file")
     ap.add_argument("--float-id", type=int, default=6000, help="float number (1-based)")
-    ap.add_argument("--start-hour", type=float, default=0.0,
-                    help="hours into the float record to start the truth window")
-    ap.add_argument("--follow-hours", type=float, default=24.0,
-                    help="duration of following after the first surfacing")
+    ap.add_argument(
+        "--start-hour",
+        type=float,
+        default=0.0,
+        help="hours into the float record to start the truth window",
+    )
+    ap.add_argument(
+        "--follow-hours",
+        type=float,
+        default=24.0,
+        help="duration of following after the first surfacing",
+    )
     args = ap.parse_args()
 
     truth_hours = 24.0 + args.follow_hours
@@ -236,8 +271,9 @@ def main() -> None:
         glider_start = (d_lat - 3000.0 / M_PER_DEG_LAT, d_lon)
         print(f"Scenario: simulated float {args.float_id} from {args.mat}")
 
-    run_sim(truth, glider_start, follow_hours=args.follow_hours,
-            config_path=args.config)
+    run_sim(
+        truth, glider_start, follow_hours=args.follow_hours, config_path=args.config
+    )
 
 
 if __name__ == "__main__":

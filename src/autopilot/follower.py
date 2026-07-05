@@ -33,7 +33,6 @@ import matplotlib
 
 matplotlib.use("Agg")  # follower runs in a background thread; no GUI
 import matplotlib.pyplot as plt
-
 from sfmc_api import BaseFollower, SurfacingEvent, generate_goto_ma
 
 from autopilot.safety import Geofence, check_waypoint
@@ -82,7 +81,8 @@ class PredictedTrackFollower(BaseFollower):
         fence_path = config.get("geofence")
         self.fence = (
             Geofence.from_geojson(fence_path, float(config.get("fence_margin_km", 2.0)))
-            if fence_path else None
+            if fence_path
+            else None
         )
         sp = config.get("safe_point")
         self.safe_point = (float(sp[0]), float(sp[1])) if sp else None  # (lon, lat)
@@ -120,7 +120,15 @@ class PredictedTrackFollower(BaseFollower):
                 t = datetime.fromisoformat(row["time"])
                 track.append((t, float(row["latitude"]), float(row["longitude"])))
         track.sort()
-        return track
+        # Drop duplicate timestamps (keep the last row): repeated times
+        # would make interpolation divide by zero.
+        deduped: list[tuple[datetime, float, float]] = []
+        for row in track:
+            if deduped and deduped[-1][0] == row[0]:
+                deduped[-1] = row
+            else:
+                deduped.append(row)
+        return deduped
 
     @staticmethod
     def _position_at(
@@ -137,11 +145,65 @@ class PredictedTrackFollower(BaseFollower):
             f = (when - t0) / (t1 - t0)
             return lat0 + f * (lat1 - lat0), lon0 + f * (lon1 - lon0), False
         # Off either end: extrapolate from the nearest pair.
-        (t0, lat0, lon0), (t1, lat1, lon1) = (track[0], track[1]) if i == 0 else (track[-2], track[-1])
+        (t0, lat0, lon0), (t1, lat1, lon1) = (
+            (track[0], track[1]) if i == 0 else (track[-2], track[-1])
+        )
         f = (when - t0) / (t1 - t0)
         return lat0 + f * (lat1 - lat0), lon0 + f * (lon1 - lon0), True
 
     # ── Per-surfacing logic ─────────────────────────────────────
+
+    def _compute_candidate(
+        self,
+        event: SurfacingEvent,
+        now: datetime,
+        track: list[tuple[datetime, float, float]],
+        created: datetime,
+        prediction_name: str,
+    ) -> tuple[tuple[float, float], tuple[float, float], float, float]:
+        """Candidate waypoint from the prediction track.
+
+        Returns (candidate (lon, lat), drifter_now (lat, lon),
+        prediction age in hours, transit seconds).
+        """
+        age_h = (now - created).total_seconds() / 3600
+        logger.info("Using %s (prediction age %.1f h)", prediction_name, age_h)
+
+        # Where is the drifter predicted to be right now?
+        d_lat, d_lon, _ = self._position_at(track, now)
+        sep_km = distance_m(event.gps_lon, event.gps_lat, d_lon, d_lat) / 1000
+        status = "within" if sep_km <= self.target_radius_km else "OUTSIDE"
+        logger.info(
+            "%s at %.4f, %.4f; drifter predicted at %.4f, %.4f; "
+            "separation %.1f km (%s %.0f km target)",
+            event.vehicle_name,
+            event.gps_lat,
+            event.gps_lon,
+            d_lat,
+            d_lon,
+            sep_km,
+            status,
+            self.target_radius_km,
+        )
+
+        # Aim where the drifter will be when the glider arrives:
+        # estimate transit time, then refine once against the moved target.
+        transit = min(sep_km * 1000 / self.speed, MAX_TRANSIT_S)
+        wpt_lat, wpt_lon, _ = self._position_at(track, now + timedelta(seconds=transit))
+        transit = min(
+            distance_m(event.gps_lon, event.gps_lat, wpt_lon, wpt_lat) / self.speed,
+            MAX_TRANSIT_S,
+        )
+        wpt_lat, wpt_lon, extrapolated = self._position_at(
+            track, now + timedelta(seconds=transit)
+        )
+        if extrapolated:
+            logger.warning(
+                "Arrival time %.1f h ahead is beyond the prediction horizon; "
+                "extrapolating past the last track point",
+                transit / 3600,
+            )
+        return (wpt_lon, wpt_lat), (d_lat, d_lon), age_h, transit
 
     def on_surfacing(self, event: SurfacingEvent) -> None:
         if event.gps_lat is None or event.gps_lon is None:
@@ -171,45 +233,16 @@ class PredictedTrackFollower(BaseFollower):
                 track = []
 
         if track:
-            age_h = (now - created).total_seconds() / 3600
-            logger.info("Using %s (prediction age %.1f h)", prediction_name, age_h)
-
-            # Where is the drifter predicted to be right now?
-            d_lat, d_lon, _ = self._position_at(track, now)
-            drifter_now = (d_lat, d_lon)
-            sep_km = distance_m(event.gps_lon, event.gps_lat, d_lon, d_lat) / 1000
-            status = "within" if sep_km <= self.target_radius_km else "OUTSIDE"
-            logger.info(
-                "%s at %.4f, %.4f; drifter predicted at %.4f, %.4f; "
-                "separation %.1f km (%s %.0f km target)",
-                event.vehicle_name,
-                event.gps_lat,
-                event.gps_lon,
-                d_lat,
-                d_lon,
-                sep_km,
-                status,
-                self.target_radius_km,
-            )
-
-            # Aim where the drifter will be when the glider arrives:
-            # estimate transit time, then refine once against the moved target.
-            transit = min(sep_km * 1000 / self.speed, MAX_TRANSIT_S)
-            wpt_lat, wpt_lon, _ = self._position_at(track, now + timedelta(seconds=transit))
-            transit = min(
-                distance_m(event.gps_lon, event.gps_lat, wpt_lon, wpt_lat) / self.speed,
-                MAX_TRANSIT_S,
-            )
-            wpt_lat, wpt_lon, extrapolated = self._position_at(
-                track, now + timedelta(seconds=transit)
-            )
-            if extrapolated:
-                logger.warning(
-                    "Arrival time %.1f h ahead is beyond the prediction horizon; "
-                    "extrapolating past the last track point",
-                    transit / 3600,
+            try:
+                candidate, drifter_now, age_h, transit = self._compute_candidate(
+                    event, now, track, created, prediction_name
                 )
-            candidate = (wpt_lon, wpt_lat)
+            except Exception:
+                # A bad prediction file must degrade to FALLBACK (the
+                # safety gate treats candidate=None as NO_PREDICTION),
+                # never lose the surfacing.
+                logger.exception("Waypoint computation failed")
+                candidate = None
 
         # ── Safety gate ─────────────────────────────────────────
         verdict = check_waypoint(
@@ -263,7 +296,9 @@ class PredictedTrackFollower(BaseFollower):
                 transit / 3600,
             )
         else:
-            logger.info("Queued %s -> %.4f, %.4f (safe point)", filename, wpt_lat, wpt_lon)
+            logger.info(
+                "Queued %s -> %.4f, %.4f (safe point)", filename, wpt_lat, wpt_lon
+            )
 
         # Archive a timestamped copy of what was sent (the upload itself
         # uses the regular name, which the glider's mission expects).
@@ -278,8 +313,14 @@ class PredictedTrackFollower(BaseFollower):
 
         try:
             self._save_plot(
-                now, event, track, created, prediction_name,
-                (wpt_lat, wpt_lon), drifter_now, state,
+                now,
+                event,
+                track,
+                created,
+                prediction_name,
+                (wpt_lat, wpt_lon),
+                drifter_now,
+                state,
             )
         except Exception:
             logger.exception("Plotting failed")
@@ -311,8 +352,14 @@ class PredictedTrackFollower(BaseFollower):
                 )
                 self.bathymetry = None
                 return
-            ax.contour(b.lon, b.lat, b, levels=np.arange(0, 5000, 100),
-                       colors="k", linewidths=0.25)
+            ax.contour(
+                b.lon,
+                b.lat,
+                b,
+                levels=np.arange(0, 5000, 100),
+                colors="k",
+                linewidths=0.25,
+            )
         except Exception:
             logger.exception("Bathymetry plotting failed; disabling")
             self.bathymetry = None
@@ -341,8 +388,12 @@ class PredictedTrackFollower(BaseFollower):
             # Grow-only extent: expand to include everything plotted so
             # far, never shrink, so the view doesn't jump between
             # surfacings.
-            lons = [lon for _, _, lon in track] + [p[1] for p in self.history] + [wpt_lon]
-            lats = [lat for _, lat, _ in track] + [p[0] for p in self.history] + [wpt_lat]
+            lons = (
+                [lon for _, _, lon in track] + [p[1] for p in self.history] + [wpt_lon]
+            )
+            lats = (
+                [lat for _, lat, _ in track] + [p[0] for p in self.history] + [wpt_lat]
+            )
             if drifter_now is not None:
                 d_lat, d_lon = drifter_now
                 r_lon = r_lat / math.cos(math.radians(d_lat))
@@ -353,28 +404,43 @@ class PredictedTrackFollower(BaseFollower):
                 self._bounds = new
             else:
                 b = self._bounds
-                self._bounds = [min(b[0], new[0]), max(b[1], new[1]),
-                                min(b[2], new[2]), max(b[3], new[3])]
+                self._bounds = [
+                    min(b[0], new[0]),
+                    max(b[1], new[1]),
+                    min(b[2], new[2]),
+                    max(b[3], new[3]),
+                ]
             lon0, lon1, lat0, lat1 = self._bounds
         pad_lon = 0.05 * (lon1 - lon0)
         pad_lat = 0.05 * (lat1 - lat0)
         ax.set_xlim(lon0 - pad_lon, lon1 + pad_lon)
         ax.set_ylim(lat0 - pad_lat, lat1 + pad_lat)
 
-        self._draw_bathymetry(ax, lon0 - pad_lon, lon1 + pad_lon,
-                              lat0 - pad_lat, lat1 + pad_lat)
+        self._draw_bathymetry(
+            ax, lon0 - pad_lon, lon1 + pad_lon, lat0 - pad_lat, lat1 + pad_lat
+        )
 
         # Geofence and safe point.
         if self.fence is not None:
             for i, ring in enumerate(self.fence.rings_lonlat()):
-                ax.plot(*zip(*ring), "-", color="red", lw=1,
-                        label="geofence" if i == 0 else None)
+                ax.plot(
+                    *zip(*ring),
+                    "-",
+                    color="red",
+                    lw=1,
+                    label="geofence" if i == 0 else None,
+                )
             for i, ring in enumerate(self.fence.rings_lonlat(buffered=True)):
-                ax.plot(*zip(*ring), "--", color="red", lw=0.7, alpha=0.6,
-                        label="fence margin" if i == 0 else None)
+                ax.plot(
+                    *zip(*ring),
+                    "--",
+                    color="red",
+                    lw=0.7,
+                    alpha=0.6,
+                    label="fence margin" if i == 0 else None,
+                )
         if self.safe_point is not None:
-            ax.plot(*self.safe_point, "s", color="tab:green", ms=8,
-                    label="safe point")
+            ax.plot(*self.safe_point, "s", color="tab:green", ms=8, label="safe point")
 
         # Drifter track: observed up to file creation time, predicted after.
         if track and created is not None:
@@ -388,26 +454,45 @@ class PredictedTrackFollower(BaseFollower):
         if drifter_now is not None:
             d_lat, d_lon = drifter_now
             r_lon = r_lat / math.cos(math.radians(d_lat))
-            ax.plot(d_lon, d_lat, "o", color="tab:blue", ms=8,
-                    label="drifter (predicted now)")
+            ax.plot(
+                d_lon,
+                d_lat,
+                "o",
+                color="tab:blue",
+                ms=8,
+                label="drifter (predicted now)",
+            )
             # Target-radius circle around the drifter's predicted position.
             th = [i * 2 * math.pi / 100 for i in range(101)]
             ax.plot(
                 [d_lon + r_lon * math.cos(a) for a in th],
                 [d_lat + r_lat * math.sin(a) for a in th],
-                ":", color="tab:blue", lw=1,
+                ":",
+                color="tab:blue",
+                lw=1,
                 label=f"{self.target_radius_km:.0f} km target",
             )
 
         # Glider track and current position.
         lats, lons = zip(*self.history)
         ax.plot(lons, lats, "-", color="tab:orange", label="glider track")
-        ax.plot(event.gps_lon, event.gps_lat, "^", color="tab:orange", ms=10,
-                label="glider (this surfacing)")
+        ax.plot(
+            event.gps_lon,
+            event.gps_lat,
+            "^",
+            color="tab:orange",
+            ms=10,
+            label="glider (this surfacing)",
+        )
 
         # Planned waypoint and the leg to it.
-        ax.plot([event.gps_lon, wpt_lon], [event.gps_lat, wpt_lat],
-                ":", color="tab:red", lw=1)
+        ax.plot(
+            [event.gps_lon, wpt_lon],
+            [event.gps_lat, wpt_lat],
+            ":",
+            color="tab:red",
+            lw=1,
+        )
         ax.plot(wpt_lon, wpt_lat, "*", color="tab:red", ms=14, label="waypoint")
 
         ax.set_aspect(1 / math.cos(math.radians(event.gps_lat)))
