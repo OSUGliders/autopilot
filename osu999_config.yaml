@@ -44,3 +44,12 @@ bathymetry: bathymetry/gebco_2026_n35.0_s32.0_w-122.0_e-117.0.nc
 # Directory for timestamped archive copies of every .ma file sent
 # (e.g. goto_l10_20260702T120000.ma).
 archive_dir: goto_archive
+
+# Optional pilot email notifications: sent on FALLBACK entry, every
+# reminder_h while it persists, and on recovery. Omit to disable.
+# notify:
+#   from: glider-autopilot@oregonstate.edu
+#   to: [jesse.cusack@oregonstate.edu]
+#   smtp_host: localhost   # campus relay, no auth
+#   smtp_port: 25
+#   reminder_h: 6

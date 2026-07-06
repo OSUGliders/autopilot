@@ -4,5 +4,5 @@ __pycache__
 .ruff_cache
 20180724_20180806
 sim_output/
-example_logs/
-replay_*
+examples_logs/
+replay_sl*

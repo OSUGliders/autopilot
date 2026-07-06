@@ -35,6 +35,7 @@ matplotlib.use("Agg")  # follower runs in a background thread; no GUI
 import matplotlib.pyplot as plt
 from sfmc_api import BaseFollower, SurfacingEvent, generate_goto_ma
 
+from autopilot.notify import Notifier
 from autopilot.safety import Geofence, check_waypoint
 
 logging.basicConfig(
@@ -86,6 +87,8 @@ class PredictedTrackFollower(BaseFollower):
         )
         sp = config.get("safe_point")
         self.safe_point = (float(sp[0]), float(sp[1])) if sp else None  # (lon, lat)
+        ncfg = config.get("notify")
+        self.notifier = Notifier(ncfg) if ncfg else None
         self.max_age_h = float(config.get("max_prediction_age_h", 9.0))
         self.max_jump_km = float(config.get("max_waypoint_jump_km", 30.0))
         # Fail at startup, not at sea.
@@ -258,6 +261,15 @@ class PredictedTrackFollower(BaseFollower):
             logger.info(
                 "Distance to fence boundary: %.1f km",
                 self.fence.boundary_distance_km(event.gps_lon, event.gps_lat),
+            )
+        if self.notifier is not None:
+            self.notifier.update(
+                now,
+                event.vehicle_name,
+                verdict.ok,
+                verdict.reason,
+                verdict.detail,
+                (event.gps_lat, event.gps_lon),
             )
         if verdict.ok:
             state = "NORMAL"
