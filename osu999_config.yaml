@@ -37,6 +37,10 @@ max_waypoint_jump_km: 30
 # Directory for the per-surfacing plot saved as {glider}_{time}.png.
 plot_dir: plots
 
+# Fixed plot extent [lon_min, lon_max, lat_min, lat_max].  Omit to
+# auto-zoom (extent grows to fit the data, never shrinks).
+# plot_bounds: [-120.5, -119.5, 33.4, 34.0]
+
 # Optional GEBCO bathymetry netCDF for depth contours on the plots
 # (subset to the plotted region automatically; omit to disable).
 bathymetry: bathymetry/gebco_2026_n35.0_s32.0_w-122.0_e-117.0.nc
