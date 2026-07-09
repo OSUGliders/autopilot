@@ -16,6 +16,7 @@ dependencies = [
 [project.scripts]
 autopilot-sim = "autopilot.sim.closed_loop:main"
 autopilot-mock-data = "autopilot.sim.mock_data:main"
+autopilot-live-drifter = "autopilot.sim.live_drifter:main"
 
 [dependency-groups]
 dev = [
