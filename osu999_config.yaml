@@ -16,6 +16,10 @@ target_radius_km: 4.0
 # Sequence number N for the generated goto_l{N}.ma file.
 sequence_number: 10
 
+# goto_list num_legs_to_run: -1 loops around the waypoint forever
+# -2 stops once it is reached.
+num_legs_to_run: -1
+
 # ── Safety layer ────────────────────────────────────────────────
 # Waypoints must lie inside this polygon (GeoJSON, drawn in advance
 # over deep water) shrunk by fence_margin_km; the glider→waypoint leg

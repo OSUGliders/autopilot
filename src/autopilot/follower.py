@@ -67,6 +67,8 @@ class PredictedTrackFollower(BaseFollower):
         self.speed = float(config.get("speed_horizontal", 0.35))
         self.sequence_number = int(config.get("sequence_number", 10))
         self.target_radius_km = float(config.get("target_radius_km", 4.0))
+        # -1 loops around the waypoint forever; -2 stops once it is reached.
+        self.num_legs_to_run = int(config.get("num_legs_to_run", -1))
         self.plot_dir = Path(config.get("plot_dir", "plots"))
         self.archive_dir = Path(config.get("archive_dir", "ma_archive"))
         self.history: list[tuple[float, float]] = []  # (lat, lon) per surfacing
@@ -297,6 +299,7 @@ class PredictedTrackFollower(BaseFollower):
         filename, content = generate_goto_ma(
             waypoints=[(wpt_lon, wpt_lat)],
             sequence_number=self.sequence_number,
+            num_legs_to_run=self.num_legs_to_run,
         )
         self.send_files(to_glider={filename: content})
         if verdict.ok:
