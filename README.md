@@ -62,6 +62,29 @@ uv run sfmc-follow --glider osu684 --follower src/autopilot/follower.py \
 `--replay-interval 0` disables the default 10 s pause between
 surfacings (keep it to watch the replay unfold).
 
+## Track a replayed drifter with a simulated glider
+
+`autopilot-live-drifter` replays a historical float track (MAT file
+with TIME/LAT/LON) against a simulated glider running in real time on
+SFMC. It queries SFMC for the glider's last valid GPS fix, shifts the
+track so it starts at that time, and writes the whole deployment's
+prediction files in one shot — the follower only ever reads the newest
+file dated at or before "now", so future-dated files lie dormant until
+the wall clock reaches them.
+
+```sh
+# Rank the floats starting nearest the glider, pick one:
+uv run autopilot-live-drifter Floats/MIT_RIOT_Traj_...mat --glider osusim --list 8
+
+# Generate all prediction files into the follower's predictions_dir:
+uv run autopilot-live-drifter Floats/MIT_RIOT_Traj_...mat --glider osusim \
+    --float-id 6560 --outdir predictions
+```
+
+Then run the follower as usual (below). Don't re-run the generator
+mid-test: it re-anchors the track to the latest fix, teleporting the
+drifter.
+
 ## Run live
 
 ```sh
