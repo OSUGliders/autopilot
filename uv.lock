@@ -1138,7 +1138,7 @@ wheels = [
 [[package]]
 name = "sfmc-api"
 version = "0.2.0"
-source = { git = "https://github.com/mousebrains/SFMC-API-Python#3fa7639af624b75b2f03f07c7786bb71bb66ac61" }
+source = { git = "https://github.com/mousebrains/SFMC-API-Python#cb553ff2e8ced2cb0f2ae6d7699e809437338280" }
 dependencies = [
     { name = "httpx" },
     { name = "websockets" },

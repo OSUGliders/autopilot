@@ -1,5 +1,12 @@
 # Configuration for autopilot.follower (PredictedTrackFollower).
 
+# Path to this file.  When set, the follower re-reads it at each
+# surfacing and applies changes to speed_horizontal, target_radius_km,
+# num_legs_to_run, max_prediction_age_h, max_waypoint_jump_km,
+# plot_bounds and pattern without a restart.  Everything else (fence,
+# safe_point, sequence_number, notify, paths) still needs one.
+# config_file: osu999_config.yaml
+
 # Directory containing prediction files named drifter_YYYYmmddTHHMM.csv
 # (creation time in the name).  Each file: time,latitude,longitude rows
 # covering 24 h before to 12 h after creation, in 2-hour steps.
@@ -36,7 +43,7 @@ safe_point: [-120.07, 33.58]
 max_prediction_age_h: 12
 
 # Reject waypoints further than this from the glider (km).
-max_waypoint_jump_km: 30
+max_waypoint_jump_km: 50
 
 # Directory for the per-surfacing plot saved as {glider}_{time}.png.
 plot_dir: plots

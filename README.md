@@ -96,3 +96,12 @@ Add `--dry-run` first to watch without uploading. The glider's mission
 must run `goto_list` with `args_from_file` matching `sequence_number`
 in the config (10 → `goto_l10.ma`). Capture a real dialog log with
 `uv run sfmc-monitor-glider --glider <name> --logfile dialog.log`.
+
+The effective config is logged at startup. Set `config_file:` in the
+YAML (its own path) to enable live reload: the follower re-reads the
+file at each surfacing and applies changed thresholds, speed,
+`num_legs_to_run`, `plot_bounds`, and `pattern` without a restart,
+logging each change. Structural settings (fence, safe point,
+`sequence_number`, notify, paths) still require a restart, and a
+broken edit keeps the previous settings rather than stopping the
+follower.

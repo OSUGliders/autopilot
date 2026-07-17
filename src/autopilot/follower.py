@@ -33,6 +33,7 @@ import matplotlib
 
 matplotlib.use("Agg")  # follower runs in a background thread; no GUI
 import matplotlib.pyplot as plt
+import yaml
 from sfmc_api import BaseFollower, SurfacingEvent, generate_goto_ma
 
 from autopilot.notify import Notifier
@@ -60,22 +61,33 @@ def distance_m(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
 class PredictedTrackFollower(BaseFollower):
     """Chase the drifter's predicted position at glider arrival time."""
 
+    # Config keys re-applied at each surfacing when ``config_file`` is
+    # set, so they can be edited without a restart:
+    # {yaml key: (attribute, cast, default)}.  Everything else —
+    # fence, safe_point, sequence_number, notify, paths — is read once
+    # at startup (validation failures must happen there, not at sea).
+    HOT_KEYS = {
+        "pattern": ("pattern", str, "drifter_*.csv"),
+        "speed_horizontal": ("speed", float, 0.35),
+        "target_radius_km": ("target_radius_km", float, 4.0),
+        # -1 loops around the waypoint forever; -2 stops once reached.
+        "num_legs_to_run": ("num_legs_to_run", int, -1),
+        "max_prediction_age_h": ("max_age_h", float, 9.0),
+        "max_waypoint_jump_km": ("max_jump_km", float, 30.0),
+        # Fixed plot extent [lon_min, lon_max, lat_min, lat_max]; if
+        # None, the extent grows to fit the data (never shrinks).
+        "plot_bounds": ("plot_bounds", None, None),
+    }
+
     def __init__(self, config, queue_in, queue_out):
         super().__init__(config, queue_in, queue_out)
         self.predictions_dir = Path(config["predictions_dir"])
-        self.pattern = config.get("pattern", "drifter_*.csv")
-        self.speed = float(config.get("speed_horizontal", 0.35))
+        self._apply_hot(config)
         self.sequence_number = int(config.get("sequence_number", 10))
-        self.target_radius_km = float(config.get("target_radius_km", 4.0))
-        # -1 loops around the waypoint forever; -2 stops once it is reached.
-        self.num_legs_to_run = int(config.get("num_legs_to_run", -1))
         self.plot_dir = Path(config.get("plot_dir", "plots"))
         self.archive_dir = Path(config.get("archive_dir", "ma_archive"))
         self.history: list[tuple[float, float]] = []  # (lat, lon) per surfacing
-        # Fixed plot extent [lon_min, lon_max, lat_min, lat_max]; if not
-        # configured, the extent grows to fit the data (never shrinks).
-        self.plot_bounds = config.get("plot_bounds")
-        self._bounds: list[float] | None = None  # grow-only fallback
+        self._bounds: list[float] | None = None  # grow-only plot extent
         # Optional GEBCO bathymetry netCDF for depth contours on plots.
         self.bathymetry = config.get("bathymetry")
         self._bathy = None  # lazily opened elevation DataArray (as depth)
@@ -91,14 +103,99 @@ class PredictedTrackFollower(BaseFollower):
         self.safe_point = (float(sp[0]), float(sp[1])) if sp else None  # (lon, lat)
         ncfg = config.get("notify")
         self.notifier = Notifier(ncfg) if ncfg else None
-        self.max_age_h = float(config.get("max_prediction_age_h", 9.0))
-        self.max_jump_km = float(config.get("max_waypoint_jump_km", 30.0))
         # Fail at startup, not at sea.
         if self.fence is not None:
             if self.safe_point is None:
                 raise ValueError("geofence configured without a safe_point")
             if not self.fence.contains_buffered(*self.safe_point):
                 raise ValueError("safe_point is outside the buffered geofence")
+
+        # Live reload: when the config names its own path, HOT_KEYS are
+        # re-read from it at each surfacing.
+        self.config_file = config.get("config_file")
+        self._config_mtime = self._config_stat()
+        if self.config_file is not None and self._config_mtime is None:
+            raise ValueError(f"config_file is not readable: {self.config_file}")
+        self._log_config("Loaded config")
+
+    # ── Config reload ───────────────────────────────────────────
+
+    def _config_stat(self) -> float | None:
+        if self.config_file is None:
+            return None
+        try:
+            return Path(self.config_file).stat().st_mtime
+        except OSError:
+            return None
+
+    def _apply_hot(self, config: dict) -> list[str]:
+        """Set attributes for HOT_KEYS from *config*; list the changes."""
+        changes = []
+        for key, (attr, cast, default) in self.HOT_KEYS.items():
+            value = config.get(key, default)
+            if cast is not None and value is not None:
+                value = cast(value)
+            old = getattr(self, attr, value)
+            if value != old:
+                changes.append(f"{key}: {old} -> {value}")
+            setattr(self, attr, value)
+        return changes
+
+    def _log_config(self, heading: str) -> None:
+        """Log the effective config (defaults applied) at INFO."""
+        eff = {key: getattr(self, attr) for key, (attr, _, _) in self.HOT_KEYS.items()}
+        eff.update(
+            predictions_dir=self.predictions_dir,
+            plot_dir=self.plot_dir,
+            archive_dir=self.archive_dir,
+            sequence_number=self.sequence_number,
+            geofence=self.config.get("geofence"),
+            fence_margin_km=float(self.config.get("fence_margin_km", 2.0)),
+            safe_point=self.safe_point,
+            bathymetry=self.bathymetry,
+            notify=self.config.get("notify"),
+            config_file=self.config_file,
+        )
+        lines = "\n".join(f"  {k}: {v}" for k, v in sorted(eff.items()))
+        logger.info("%s:\n%s", heading, lines)
+
+    def _maybe_reload(self) -> None:
+        """Re-apply HOT_KEYS from config_file if it changed on disk.
+
+        Never raises: a broken edit keeps the current settings and is
+        retried at the next surfacing.
+        """
+        if self.config_file is None:
+            return
+        mtime = self._config_stat()
+        if mtime is None:
+            if self._config_mtime is not None:
+                logger.error(
+                    "Config file %s unreadable; keeping current settings",
+                    self.config_file,
+                )
+                self._config_mtime = None
+            return
+        if mtime == self._config_mtime:
+            return
+        self._config_mtime = mtime
+        try:
+            with open(self.config_file) as f:
+                new = yaml.safe_load(f) or {}
+        except Exception:
+            logger.exception("Config reload failed; keeping current settings")
+            return
+        for key in sorted(set(self.config) | set(new)):
+            if key not in self.HOT_KEYS and self.config.get(key) != new.get(key):
+                logger.warning(
+                    "Config %r changed on disk but requires a restart to apply", key
+                )
+        changes = self._apply_hot(new)
+        self.config = new
+        if changes:
+            for change in changes:
+                logger.info("Config change: %s", change)
+            self._log_config("Config reloaded")
 
     # ── Prediction file handling ────────────────────────────────
 
@@ -211,6 +308,7 @@ class PredictedTrackFollower(BaseFollower):
         return (wpt_lon, wpt_lat), (d_lat, d_lon), age_h, transit
 
     def on_surfacing(self, event: SurfacingEvent) -> None:
+        self._maybe_reload()
         if event.gps_lat is None or event.gps_lon is None:
             logger.warning("Surfacing without a GPS fix, skipping")
             return
