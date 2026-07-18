@@ -9,10 +9,12 @@ import logging
 import os
 from datetime import UTC, datetime, timedelta
 from queue import Queue
+from types import SimpleNamespace
 
 import yaml
 
 from autopilot.follower import PredictedTrackFollower
+from autopilot.safety import Verdict
 
 T0 = datetime(2026, 3, 22, 0, 0, tzinfo=UTC)
 
@@ -90,3 +92,41 @@ def test_reload_warns_on_restart_only_key(tmp_path, caplog):
         follower._maybe_reload()
     assert follower.sequence_number == 10  # startup value kept
     assert any("requires a restart" in r.message for r in caplog.records)
+
+
+# ── FALLBACK notification edges ─────────────────────────────────
+
+
+def notifying_follower():
+    """A follower whose notify() records calls instead of emailing."""
+    follower = PredictedTrackFollower({"predictions_dir": "p"}, Queue(), Queue())
+    calls = []
+    follower.notify = lambda key, summary, detail, *, min_gap_seconds: calls.append(
+        (key, summary, min_gap_seconds)
+    )
+    return follower, calls
+
+
+EVENT = SimpleNamespace(vehicle_name="osu684", gps_lat=33.13, gps_lon=-117.70)
+OK = Verdict(True, "", "")
+BAD = Verdict(False, "STALE", "prediction 13h old")
+
+
+def test_fallback_notify_edges():
+    follower, calls = notifying_follower()
+
+    follower._notify_fallback(T0, EVENT, OK)
+    assert not calls, "no email while healthy"
+
+    # Entry forces a send (gap 0); reminders defer to the rate limit.
+    follower._notify_fallback(T0, EVENT, BAD)
+    follower._notify_fallback(T0, EVENT, BAD)
+    assert [c[2] for c in calls] == [0.0, follower.fallback_reminder_h * 3600.0]
+    assert "FALLBACK (STALE)" in calls[0][1]
+    assert "still in FALLBACK" in calls[1][1]
+
+    # Recovery emails once, then healthy surfacings are silent.
+    follower._notify_fallback(T0, EVENT, OK)
+    follower._notify_fallback(T0, EVENT, OK)
+    assert len(calls) == 3
+    assert "recovered" in calls[2][1] and calls[2][2] == 0.0

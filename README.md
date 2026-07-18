@@ -102,6 +102,13 @@ YAML (its own path) to enable live reload: the follower re-reads the
 file at each surfacing and applies changed thresholds, speed,
 `num_legs_to_run`, `plot_bounds`, and `pattern` without a restart,
 logging each change. Structural settings (fence, safe point,
-`sequence_number`, notify, paths) still require a restart, and a
-broken edit keeps the previous settings rather than stopping the
-follower.
+`sequence_number`, paths) still require a restart, and a broken edit
+keeps the previous settings rather than stopping the follower.
+
+Email alerts use sfmc-api's notification system: add
+`--notify-email ADDR` (repeatable, all recipients get every alert) to
+the `sfmc-follow` command. That enables both the framework's sustained
+SFMC-disconnect alerts (`--notify-after`, `--notify-repeat`) and this
+follower's FALLBACK entry/reminder/recovery emails
+(`fallback_reminder_h` in the config). SMTP defaults to
+localhost:25; see `sfmc-follow --help` for the `--smtp-*` options.

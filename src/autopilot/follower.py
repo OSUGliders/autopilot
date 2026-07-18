@@ -36,7 +36,6 @@ import matplotlib.pyplot as plt
 import yaml
 from sfmc_api import BaseFollower, SurfacingEvent, generate_goto_ma
 
-from autopilot.notify import Notifier
 from autopilot.safety import Geofence, check_waypoint
 
 logging.basicConfig(
@@ -64,8 +63,8 @@ class PredictedTrackFollower(BaseFollower):
     # Config keys re-applied at each surfacing when ``config_file`` is
     # set, so they can be edited without a restart:
     # {yaml key: (attribute, cast, default)}.  Everything else —
-    # fence, safe_point, sequence_number, notify, paths — is read once
-    # at startup (validation failures must happen there, not at sea).
+    # fence, safe_point, sequence_number, paths — is read once at
+    # startup (validation failures must happen there, not at sea).
     HOT_KEYS = {
         "pattern": ("pattern", str, "drifter_*.csv"),
         "speed_horizontal": ("speed", float, 0.35),
@@ -74,6 +73,8 @@ class PredictedTrackFollower(BaseFollower):
         "num_legs_to_run": ("num_legs_to_run", int, -1),
         "max_prediction_age_h": ("max_age_h", float, 9.0),
         "max_waypoint_jump_km": ("max_jump_km", float, 30.0),
+        # Hours between "still in FALLBACK" reminder emails.
+        "fallback_reminder_h": ("fallback_reminder_h", float, 6.0),
         # Fixed plot extent [lon_min, lon_max, lat_min, lat_max]; if
         # None, the extent grows to fit the data (never shrinks).
         "plot_bounds": ("plot_bounds", None, None),
@@ -101,8 +102,7 @@ class PredictedTrackFollower(BaseFollower):
         )
         sp = config.get("safe_point")
         self.safe_point = (float(sp[0]), float(sp[1])) if sp else None  # (lon, lat)
-        ncfg = config.get("notify")
-        self.notifier = Notifier(ncfg) if ncfg else None
+        self._in_fallback = False  # edge detection for pilot emails
         # Fail at startup, not at sea.
         if self.fence is not None:
             if self.safe_point is None:
@@ -153,7 +153,6 @@ class PredictedTrackFollower(BaseFollower):
             fence_margin_km=float(self.config.get("fence_margin_km", 2.0)),
             safe_point=self.safe_point,
             bathymetry=self.bathymetry,
-            notify=self.config.get("notify"),
             config_file=self.config_file,
         )
         lines = "\n".join(f"  {k}: {v}" for k, v in sorted(eff.items()))
@@ -307,6 +306,48 @@ class PredictedTrackFollower(BaseFollower):
             )
         return (wpt_lon, wpt_lat), (d_lat, d_lon), age_h, transit
 
+    def _notify_fallback(self, now, event, verdict) -> None:
+        """Email pilots on FALLBACK entry, reminders, and recovery.
+
+        Delivery goes through :meth:`BaseFollower.notify` (sfmc-api's
+        DisconnectNotifier): background sender with retries, enabled by
+        the ``--notify-email`` CLI flags, silent in replay mode.  A
+        ``min_gap_seconds`` of 0 forces the transition emails through
+        the per-key rate limit; reminders reuse the same key so the
+        first one is due ``fallback_reminder_h`` after entry.
+        """
+        position = f"Glider position: {event.gps_lat:.4f}, {event.gps_lon:.4f}"
+        if verdict.ok:
+            if self._in_fallback:
+                self.notify(
+                    "fallback",
+                    "autopilot recovered",
+                    f"{event.vehicle_name} is tracking normally again at "
+                    f"{now:%Y-%m-%d %H:%M} UTC.\n{position}",
+                    min_gap_seconds=0.0,
+                )
+            self._in_fallback = False
+            return
+        if not self._in_fallback:
+            summary = f"autopilot FALLBACK ({verdict.reason})"
+            detail = (
+                f"{event.vehicle_name} could not get a safe waypoint at "
+                f"{now:%Y-%m-%d %H:%M} UTC and was sent to the safe point.\n"
+                f"Reason: {verdict.reason}: {verdict.detail}\n{position}\n"
+                "It will retry at every surfacing; pilot attention required."
+            )
+            gap = 0.0
+        else:
+            summary = f"autopilot still in FALLBACK ({verdict.reason})"
+            detail = (
+                f"{event.vehicle_name} is still holding at the safe point as "
+                f"of {now:%Y-%m-%d %H:%M} UTC.\n"
+                f"Reason: {verdict.reason}: {verdict.detail}\n{position}"
+            )
+            gap = self.fallback_reminder_h * 3600.0
+        self._in_fallback = True
+        self.notify("fallback", summary, detail, min_gap_seconds=gap)
+
     def on_surfacing(self, event: SurfacingEvent) -> None:
         self._maybe_reload()
         if event.gps_lat is None or event.gps_lon is None:
@@ -362,15 +403,7 @@ class PredictedTrackFollower(BaseFollower):
                 "Distance to fence boundary: %.1f km",
                 self.fence.boundary_distance_km(event.gps_lon, event.gps_lat),
             )
-        if self.notifier is not None:
-            self.notifier.update(
-                now,
-                event.vehicle_name,
-                verdict.ok,
-                verdict.reason,
-                verdict.detail,
-                (event.gps_lat, event.gps_lon),
-            )
+        self._notify_fallback(now, event, verdict)
         if verdict.ok:
             state = "NORMAL"
             wpt_lon, wpt_lat = candidate
