@@ -9,12 +9,17 @@ glider arrives, validate the waypoint against a geofence, and send it
 ## Layout
 
 - `src/autopilot/follower.py` — piloting logic (sfmc-follow plugin):
-  newest prediction file → drifter position at glider arrival time →
-  `goto_l10.ma`, plus per-surfacing map and timestamped .ma archive.
+  newest prediction file → drifter positions at the configured lead
+  times (default +3 h and +6 h) → `goto_l10.ma` visited in order, plus
+  per-surfacing map and timestamped .ma archive.
 - `src/autopilot/safety.py` — geofence + waypoint validation: inside
-  `boundaries/RIOT_boundary.geojson` minus margin, leg stays inside,
-  prediction fresh, jump plausible. Any failure commands the
-  configured safe point instead (FALLBACK, red-flagged in logs/plots).
+  `boundaries/RIOT_boundary.geojson` minus margin, legs to and between
+  waypoints stay inside, prediction fresh, jump plausible. A bad later
+  waypoint truncates the goto (pilot warned); a bad first waypoint
+  triggers FALLBACK (red-flagged in logs/plots, pilot emailed) —
+  commanding the configured `safe_point`, or, when none is set,
+  sending no goto so the glider keeps looping its last commanded
+  waypoint.
 - `src/autopilot/sim/` — simulation machinery: mock/real drifter
   truth (incl. MIT RIOT MAT tracks), 6-hourly prediction files
   (24 h hindcast + 12 h forecast, 2-h steps), closed-loop stepper

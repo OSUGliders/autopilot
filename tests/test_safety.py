@@ -2,10 +2,10 @@
 
 import pytest
 
-from autopilot.safety import Geofence, check_waypoint
+from autopilot.safety import Geofence, check_next_waypoint, check_waypoint
 
 FENCE_PATH = "boundaries/RIOT_boundary.geojson"
-SAFE_POINT = (-120.07, 33.58)  # (lon, lat), matches the deployed config
+DEEP_INSIDE = (-120.07, 33.58)  # (lon, lat), >10 km from the boundary
 
 # Two points inside the fence whose connecting leg crosses the southern
 # notch (the fence is concave there).
@@ -21,9 +21,9 @@ def fence() -> Geofence:
     return Geofence.from_geojson(FENCE_PATH, margin_km=2.0)
 
 
-def test_safe_point_inside_buffered(fence):
-    assert fence.contains_buffered(*SAFE_POINT)
-    assert fence.boundary_distance_km(*SAFE_POINT) > 10
+def test_interior_point_inside_buffered(fence):
+    assert fence.contains_buffered(*DEEP_INSIDE)
+    assert fence.boundary_distance_km(*DEEP_INSIDE) > 10
 
 
 def test_outside_point_rejected(fence):
@@ -93,3 +93,24 @@ def test_glider_outside(fence):
 def test_no_fence_still_checks_staleness():
     v = check_waypoint(None, *INSIDE, (-120.05, 33.62), 12.0, 9.0, 30.0)
     assert v.reason == "STALE"
+
+
+# ── check_next_waypoint (later waypoints of a goto list) ────────────
+
+
+def test_next_waypoint_ok(fence):
+    assert check_next_waypoint(fence, INSIDE, (-120.05, 33.62)).ok
+
+
+def test_next_waypoint_outside_fence(fence):
+    v = check_next_waypoint(fence, INSIDE, OUTSIDE_NORTH)
+    assert v.reason == "FENCE_WAYPOINT"
+
+
+def test_next_waypoint_concave_leg(fence):
+    v = check_next_waypoint(fence, NOTCH_WEST, NOTCH_EAST)
+    assert v.reason == "FENCE_LEG"
+
+
+def test_next_waypoint_no_fence():
+    assert check_next_waypoint(None, INSIDE, OUTSIDE_NORTH).ok

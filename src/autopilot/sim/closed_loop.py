@@ -1,11 +1,12 @@
 """Closed-loop simulation of the predicted-track follower.
 
 Each simulated surfacing is handed to the real
-``PredictedTrackFollower``; the waypoint is parsed back out of the
-``goto_l{N}.ma`` it emits, and the glider flies one fixed-heading
+``PredictedTrackFollower``; the first waypoint is parsed back out of
+the ``goto_l{N}.ma`` it emits, and the glider flies one fixed-heading
 dive toward it (overshooting close waypoints) plus a random surfacing
-offset of up to 250 m per hour underwater.  Outputs land under
-``sim_output/``.
+offset of up to 250 m per hour underwater.  When the follower sends
+no goto (FALLBACK), the glider keeps flying at its previous waypoint.
+Outputs land under ``sim_output/``.
 
 Run with: uv run autopilot-sim --follow-hours 72 [--synthetic] [--config ...]
 """
@@ -116,9 +117,6 @@ def run_sim(
     # (in live use this would be set in the config, e.g. the operating area).
     t_lats = [la for la, _ in truth.values()]
     t_lons = [lo for _, lo in truth.values()]
-    if config.get("safe_point"):
-        t_lons.append(config["safe_point"][0])
-        t_lats.append(config["safe_point"][1])
     pad_lat = 6000.0 / M_PER_DEG_LAT
     pad_lon = pad_lat / math.cos(math.radians(sum(t_lats) / len(t_lats)))
     config["plot_bounds"] = [

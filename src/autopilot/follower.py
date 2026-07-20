@@ -11,15 +11,17 @@ At each surfacing this follower:
 1. Selects the newest prediction file created at or before the
    surfacing time (from the glider's clock, so replay works too).
    Between prediction updates it keeps flying on the older file.
-2. Interpolates the drifter's predicted position at the time the
-   glider will *arrive* there: transit time = separation distance /
-   through-water speed, with one refinement pass.
-3. Sends that single point as ``goto_l{N}.ma``.
+2. Interpolates the drifter's predicted position at each configured
+   lead time (``waypoint_lead_h``, default 3 h and 6 h ahead).
+3. Sends those points, in order, as ``goto_l{N}.ma``.
 
-A single waypoint at the predicted arrival position is the simplest
-behaviour that keeps the glider near the drifter (goal: within 4 km).
-A pattern (diamond, zigzag) can be added later by offsetting several
-waypoints around the same arrival point.
+Fallback precedence when validation fails: if a later waypoint is
+outside the fence, the goto is truncated to the earlier one(s) and the
+pilot is warned; if the *first* waypoint is unusable (no or stale
+prediction, fence, jump), the configured ``safe_point`` is commanded —
+or, when none is configured, no goto is sent at all and the glider
+keeps looping its last commanded waypoint (``num_legs_to_run -1``).
+Either way the pilot is emailed.
 """
 
 import bisect
@@ -36,7 +38,7 @@ import matplotlib.pyplot as plt
 import yaml
 from sfmc_api import BaseFollower, SurfacingEvent, generate_goto_ma
 
-from autopilot.safety import Geofence, check_waypoint
+from autopilot.safety import Geofence, check_next_waypoint, check_waypoint
 
 logging.basicConfig(
     level=logging.INFO,
@@ -46,7 +48,6 @@ logging.basicConfig(
 logger = logging.getLogger("sfmc.predicted_track")
 
 M_PER_DEG_LAT = 111320.0
-MAX_TRANSIT_S = 12 * 3600.0  # cap extrapolation of arrival time
 
 
 def distance_m(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
@@ -67,9 +68,11 @@ class PredictedTrackFollower(BaseFollower):
     # startup (validation failures must happen there, not at sea).
     HOT_KEYS = {
         "pattern": ("pattern", str, "drifter_*.csv"),
-        "speed_horizontal": ("speed", float, 0.35),
         "target_radius_km": ("target_radius_km", float, 4.0),
-        # -1 loops around the waypoint forever; -2 stops once reached.
+        # Lead times (hours ahead of the surfacing) at which the
+        # drifter's predicted positions become the goto waypoints.
+        "waypoint_lead_h": ("waypoint_lead_h", None, [3.0, 6.0]),
+        # -1 loops the waypoint list forever; -2 stops after the last.
         "num_legs_to_run": ("num_legs_to_run", int, -1),
         "max_prediction_age_h": ("max_age_h", float, 9.0),
         "max_waypoint_jump_km": ("max_jump_km", float, 30.0),
@@ -100,15 +103,16 @@ class PredictedTrackFollower(BaseFollower):
             if fence_path
             else None
         )
+        # Optional FALLBACK target: when set, an unusable first waypoint
+        # commands this point; when omitted, no goto is sent and the
+        # glider keeps looping its last commanded waypoint.
         sp = config.get("safe_point")
         self.safe_point = (float(sp[0]), float(sp[1])) if sp else None  # (lon, lat)
-        self._in_fallback = False  # edge detection for pilot emails
         # Fail at startup, not at sea.
-        if self.fence is not None:
-            if self.safe_point is None:
-                raise ValueError("geofence configured without a safe_point")
+        if self.safe_point is not None and self.fence is not None:
             if not self.fence.contains_buffered(*self.safe_point):
                 raise ValueError("safe_point is outside the buffered geofence")
+        self._in_fallback = False  # edge detection for pilot emails
 
         # Live reload: when the config names its own path, HOT_KEYS are
         # re-read from it at each surfacing.
@@ -254,18 +258,18 @@ class PredictedTrackFollower(BaseFollower):
 
     # ── Per-surfacing logic ─────────────────────────────────────
 
-    def _compute_candidate(
+    def _compute_waypoints(
         self,
         event: SurfacingEvent,
         now: datetime,
         track: list[tuple[datetime, float, float]],
         created: datetime,
         prediction_name: str,
-    ) -> tuple[tuple[float, float], tuple[float, float], float, float]:
-        """Candidate waypoint from the prediction track.
+    ) -> tuple[list[tuple[float, float]], tuple[float, float], float]:
+        """Waypoints at the configured lead hours along the prediction.
 
-        Returns (candidate (lon, lat), drifter_now (lat, lon),
-        prediction age in hours, transit seconds).
+        Returns ([(lon, lat), ...] in waypoint_lead_h order,
+        drifter_now (lat, lon), prediction age in hours).
         """
         age_h = (now - created).total_seconds() / 3600
         logger.info("Using %s (prediction age %.1f h)", prediction_name, age_h)
@@ -287,24 +291,19 @@ class PredictedTrackFollower(BaseFollower):
             self.target_radius_km,
         )
 
-        # Aim where the drifter will be when the glider arrives:
-        # estimate transit time, then refine once against the moved target.
-        transit = min(sep_km * 1000 / self.speed, MAX_TRANSIT_S)
-        wpt_lat, wpt_lon, _ = self._position_at(track, now + timedelta(seconds=transit))
-        transit = min(
-            distance_m(event.gps_lon, event.gps_lat, wpt_lon, wpt_lat) / self.speed,
-            MAX_TRANSIT_S,
-        )
-        wpt_lat, wpt_lon, extrapolated = self._position_at(
-            track, now + timedelta(seconds=transit)
-        )
-        if extrapolated:
-            logger.warning(
-                "Arrival time %.1f h ahead is beyond the prediction horizon; "
-                "extrapolating past the last track point",
-                transit / 3600,
+        waypoints = []
+        for lead_h in self.waypoint_lead_h:
+            wpt_lat, wpt_lon, extrapolated = self._position_at(
+                track, now + timedelta(hours=float(lead_h))
             )
-        return (wpt_lon, wpt_lat), (d_lat, d_lon), age_h, transit
+            if extrapolated:
+                logger.warning(
+                    "Lead time %.0f h is beyond the prediction horizon; "
+                    "extrapolating past the last track point",
+                    float(lead_h),
+                )
+            waypoints.append((wpt_lon, wpt_lat))
+        return waypoints, (d_lat, d_lon), age_h
 
     def _notify_fallback(self, now, event, verdict) -> None:
         """Email pilots on FALLBACK entry, reminders, and recovery.
@@ -328,11 +327,20 @@ class PredictedTrackFollower(BaseFollower):
                 )
             self._in_fallback = False
             return
+        if self.safe_point is not None:
+            action = "It was sent to the safe point."
+            holding = "is still holding at the safe point"
+        else:
+            action = (
+                "No new goto was sent; the glider keeps looping its last "
+                "commanded waypoint."
+            )
+            holding = "is still looping its last commanded waypoint"
         if not self._in_fallback:
             summary = f"autopilot FALLBACK ({verdict.reason})"
             detail = (
                 f"{event.vehicle_name} could not get a safe waypoint at "
-                f"{now:%Y-%m-%d %H:%M} UTC and was sent to the safe point.\n"
+                f"{now:%Y-%m-%d %H:%M} UTC.  {action}\n"
                 f"Reason: {verdict.reason}: {verdict.detail}\n{position}\n"
                 "It will retry at every surfacing; pilot attention required."
             )
@@ -340,8 +348,8 @@ class PredictedTrackFollower(BaseFollower):
         else:
             summary = f"autopilot still in FALLBACK ({verdict.reason})"
             detail = (
-                f"{event.vehicle_name} is still holding at the safe point as "
-                f"of {now:%Y-%m-%d %H:%M} UTC.\n"
+                f"{event.vehicle_name} {holding} as of "
+                f"{now:%Y-%m-%d %H:%M} UTC.\n"
                 f"Reason: {verdict.reason}: {verdict.detail}\n{position}"
             )
             gap = self.fallback_reminder_h * 3600.0
@@ -356,14 +364,13 @@ class PredictedTrackFollower(BaseFollower):
         now = event.timestamp or datetime.now(UTC)
         self.history.append((event.gps_lat, event.gps_lon))
 
-        # ── Candidate waypoint from the newest prediction ───────
-        candidate: tuple[float, float] | None = None  # (lon, lat)
+        # ── Candidate waypoints from the newest prediction ──────
+        candidates: list[tuple[float, float]] = []  # (lon, lat)
         track: list[tuple[datetime, float, float]] = []
         created: datetime | None = None
         prediction_name = "none"
         age_h: float | None = None
         drifter_now: tuple[float, float] | None = None
-        transit = 0.0
 
         latest = self._latest_prediction(now)
         if latest is None:
@@ -378,22 +385,22 @@ class PredictedTrackFollower(BaseFollower):
 
         if track:
             try:
-                candidate, drifter_now, age_h, transit = self._compute_candidate(
+                candidates, drifter_now, age_h = self._compute_waypoints(
                     event, now, track, created, prediction_name
                 )
             except Exception:
                 # A bad prediction file must degrade to FALLBACK (the
-                # safety gate treats candidate=None as NO_PREDICTION),
+                # safety gate treats no candidate as NO_PREDICTION),
                 # never lose the surfacing.
                 logger.exception("Waypoint computation failed")
-                candidate = None
+                candidates = []
 
         # ── Safety gate ─────────────────────────────────────────
         verdict = check_waypoint(
             self.fence,
             event.gps_lon,
             event.gps_lat,
-            candidate,
+            candidates[0] if candidates else None,
             age_h,
             self.max_age_h,
             self.max_jump_km,
@@ -404,58 +411,81 @@ class PredictedTrackFollower(BaseFollower):
                 self.fence.boundary_distance_km(event.gps_lon, event.gps_lat),
             )
         self._notify_fallback(now, event, verdict)
-        if verdict.ok:
-            state = "NORMAL"
-            wpt_lon, wpt_lat = candidate
-        else:
-            if self.safe_point is None:
-                logger.error(
-                    "No safe waypoint (%s: %s) and no safe_point configured; "
-                    "nothing sent",
+
+        waypoints: list[tuple[float, float]] = []
+        if not verdict.ok:
+            # First waypoint unusable: command the safe point if one is
+            # configured, otherwise send nothing — the glider keeps
+            # looping its last commanded waypoint (num_legs_to_run -1).
+            state = f"FALLBACK ({verdict.reason})"
+            if self.safe_point is not None:
+                waypoints = [self.safe_point]
+                logger.warning(
+                    "FALLBACK (%s: %s): commanding safe point %.4f, %.4f — "
+                    "pilot attention required",
+                    verdict.reason,
+                    verdict.detail,
+                    self.safe_point[1],
+                    self.safe_point[0],
+                )
+            else:
+                logger.warning(
+                    "FALLBACK (%s: %s): no goto sent; glider keeps looping "
+                    "its last commanded waypoint — pilot attention required",
                     verdict.reason,
                     verdict.detail,
                 )
-                return
-            state = f"FALLBACK ({verdict.reason})"
-            wpt_lon, wpt_lat = self.safe_point
-            logger.warning(
-                "FALLBACK (%s: %s): commanding safe point %.4f, %.4f — "
-                "pilot attention required",
-                verdict.reason,
-                verdict.detail,
-                wpt_lat,
-                wpt_lon,
-            )
-
-        filename, content = generate_goto_ma(
-            waypoints=[(wpt_lon, wpt_lat)],
-            sequence_number=self.sequence_number,
-            num_legs_to_run=self.num_legs_to_run,
-        )
-        self.send_files(to_glider={filename: content})
-        if verdict.ok:
-            logger.info(
-                "Queued %s -> %.4f, %.4f (drifter position predicted %.1f h ahead)",
-                filename,
-                wpt_lat,
-                wpt_lon,
-                transit / 3600,
-            )
         else:
+            # A bad later waypoint truncates the list, never falls back.
+            state = "NORMAL"
+            waypoints = candidates[:1]
+            for wpt in candidates[1:]:
+                v = check_next_waypoint(self.fence, waypoints[-1], wpt)
+                if not v.ok:
+                    n = len(waypoints) + 1
+                    state = f"NORMAL, waypoint {n} dropped ({v.reason})"
+                    logger.warning(
+                        "Dropping waypoint %d (%s: %s); sending %d waypoint(s)",
+                        n,
+                        v.reason,
+                        v.detail,
+                        len(waypoints),
+                    )
+                    self.notify(
+                        "waypoint-dropped",
+                        f"goto truncated ({v.reason})",
+                        f"Waypoint {n} was dropped: {v.detail}\n"
+                        "The glider proceeds to the earlier waypoint(s) only.",
+                        min_gap_seconds=self.fallback_reminder_h * 3600.0,
+                    )
+                    break
+                waypoints.append(wpt)
+
+        if waypoints:
+            filename, content = generate_goto_ma(
+                waypoints=waypoints,
+                sequence_number=self.sequence_number,
+                num_legs_to_run=self.num_legs_to_run,
+                initial_wpt=0,  # visit in lead-time order, not closest-first
+            )
+            self.send_files(to_glider={filename: content})
             logger.info(
-                "Queued %s -> %.4f, %.4f (safe point)", filename, wpt_lat, wpt_lon
+                "Queued %s with %d waypoint(s): %s",
+                filename,
+                len(waypoints),
+                "; ".join(f"{lat:.4f}, {lon:.4f}" for lon, lat in waypoints),
             )
 
-        # Archive a timestamped copy of what was sent (the upload itself
-        # uses the regular name, which the glider's mission expects).
-        try:
-            self.archive_dir.mkdir(parents=True, exist_ok=True)
-            stem, suffix = Path(filename).stem, Path(filename).suffix
-            archive_path = self.archive_dir / f"{stem}_{now:%Y%m%dT%H%M%S}{suffix}"
-            archive_path.write_text(content)
-            logger.info("Archived %s", archive_path)
-        except Exception:
-            logger.exception("Archiving failed")
+            # Archive a timestamped copy of what was sent (the upload
+            # itself uses the regular name the glider's mission expects).
+            try:
+                self.archive_dir.mkdir(parents=True, exist_ok=True)
+                stem, suffix = Path(filename).stem, Path(filename).suffix
+                archive_path = self.archive_dir / f"{stem}_{now:%Y%m%dT%H%M%S}{suffix}"
+                archive_path.write_text(content)
+                logger.info("Archived %s", archive_path)
+            except Exception:
+                logger.exception("Archiving failed")
 
         try:
             self._save_plot(
@@ -464,7 +494,7 @@ class PredictedTrackFollower(BaseFollower):
                 track,
                 created,
                 prediction_name,
-                (wpt_lat, wpt_lon),
+                waypoints,
                 drifter_now,
                 state,
             )
@@ -517,15 +547,14 @@ class PredictedTrackFollower(BaseFollower):
         track: list[tuple[datetime, float, float]],
         created: datetime | None,
         prediction_name: str,
-        waypoint: tuple[float, float],
+        waypoints: list[tuple[float, float]],  # (lon, lat); empty in FALLBACK
         drifter_now: tuple[float, float] | None,
         state: str = "NORMAL",
     ) -> None:
-        """Save a map of glider track, planned waypoint, and drifter track."""
+        """Save a map of glider track, planned waypoints, and drifter track."""
         fig, ax = plt.subplots(figsize=(7, 7))
 
         r_lat = self.target_radius_km * 1000 / M_PER_DEG_LAT
-        wpt_lat, wpt_lon = waypoint
 
         # Extent first, so bathymetry can be subset to the plotted region.
         if self.plot_bounds is not None:
@@ -535,10 +564,14 @@ class PredictedTrackFollower(BaseFollower):
             # far, never shrink, so the view doesn't jump between
             # surfacings.
             lons = (
-                [lon for _, _, lon in track] + [p[1] for p in self.history] + [wpt_lon]
+                [lon for _, _, lon in track]
+                + [p[1] for p in self.history]
+                + [lon for lon, _ in waypoints]
             )
             lats = (
-                [lat for _, lat, _ in track] + [p[0] for p in self.history] + [wpt_lat]
+                [lat for _, lat, _ in track]
+                + [p[0] for p in self.history]
+                + [lat for _, lat in waypoints]
             )
             if drifter_now is not None:
                 d_lat, d_lon = drifter_now
@@ -631,15 +664,28 @@ class PredictedTrackFollower(BaseFollower):
             label="glider (this surfacing)",
         )
 
-        # Planned waypoint and the leg to it.
-        ax.plot(
-            [event.gps_lon, wpt_lon],
-            [event.gps_lat, wpt_lat],
-            ":",
-            color="tab:red",
-            lw=1,
-        )
-        ax.plot(wpt_lon, wpt_lat, "*", color="tab:red", ms=14, label="waypoint")
+        # Planned waypoints and the legs to/between them.
+        if waypoints:
+            leg_lons = [event.gps_lon] + [lon for lon, _ in waypoints]
+            leg_lats = [event.gps_lat] + [lat for _, lat in waypoints]
+            ax.plot(leg_lons, leg_lats, ":", color="tab:red", lw=1)
+            ax.plot(
+                [lon for lon, _ in waypoints],
+                [lat for _, lat in waypoints],
+                "*",
+                color="tab:red",
+                ms=14,
+                ls="none",
+                label="waypoints",
+            )
+            for i, (lon, lat) in enumerate(waypoints, start=1):
+                ax.annotate(
+                    str(i),
+                    (lon, lat),
+                    textcoords="offset points",
+                    xytext=(6, 6),
+                    fontsize=8,
+                )
 
         ax.set_aspect(1 / math.cos(math.radians(event.gps_lat)))
         ax.set_xlabel("Longitude")

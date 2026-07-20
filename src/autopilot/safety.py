@@ -175,3 +175,29 @@ def check_waypoint(
             f"waypoint is {jump_km:.0f} km away (max {max_jump_km:.0f} km)",
         )
     return Verdict(True, "OK")
+
+
+def check_next_waypoint(
+    fence: Geofence | None,
+    prev: tuple[float, float],
+    waypoint: tuple[float, float],
+) -> Verdict:
+    """Validate a follow-up waypoint reached from *prev* (both (lon, lat)).
+
+    The first waypoint of a goto list goes through
+    :func:`check_waypoint`; each later one only needs to be inside the
+    buffered fence with the leg from its predecessor staying inside.
+    """
+    if fence is None:
+        return Verdict(True, "OK")
+    wpt_lon, wpt_lat = waypoint
+    if not fence.contains_buffered(wpt_lon, wpt_lat):
+        return Verdict(
+            False,
+            "FENCE_WAYPOINT",
+            f"waypoint {wpt_lat:.4f}, {wpt_lon:.4f} is outside the fence "
+            f"minus {fence.margin_km:.1f} km margin",
+        )
+    if not fence.leg_inside(prev[0], prev[1], wpt_lon, wpt_lat):
+        return Verdict(False, "FENCE_LEG", "leg between waypoints exits the fence")
+    return Verdict(True, "OK")
