@@ -47,6 +47,30 @@ logging.basicConfig(
 )
 logger = logging.getLogger("sfmc.predicted_track")
 
+
+def _adopt_framework_handlers() -> None:
+    """Send our records through sfmc-follow's handlers (incl. --logfile).
+
+    sfmc-follow's setup_logging() attaches its rotating-file and
+    stderr handlers only to its own ``sfmc.<glider>.*`` loggers, so
+    without this the piloting log would reach stderr (the journal)
+    but not the ``--logfile`` file.  Outside sfmc-follow (sim, tests)
+    no such logger exists and the basicConfig stderr fallback stays
+    in charge.
+    """
+    for name, obj in list(logging.Logger.manager.loggerDict.items()):
+        if (
+            name.startswith("sfmc.")
+            and name.endswith(".FOLLOW")
+            and isinstance(obj, logging.Logger)
+            and obj.handlers
+        ):
+            logger.handlers = list(obj.handlers)
+            logger.setLevel(obj.level)
+            logger.propagate = False
+            return
+
+
 M_PER_DEG_LAT = 111320.0
 
 
@@ -85,6 +109,7 @@ class PredictedTrackFollower(BaseFollower):
 
     def __init__(self, config, queue_in, queue_out):
         super().__init__(config, queue_in, queue_out)
+        _adopt_framework_handlers()
         self.predictions_dir = Path(config["predictions_dir"])
         self._apply_hot(config)
         self.sequence_number = int(config.get("sequence_number", 10))

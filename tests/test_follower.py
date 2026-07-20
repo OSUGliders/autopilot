@@ -94,6 +94,25 @@ def test_reload_warns_on_restart_only_key(tmp_path, caplog):
     assert any("requires a restart" in r.message for r in caplog.records)
 
 
+def test_adopts_framework_log_handlers(tmp_path):
+    """With sfmc-follow's loggers present, our log lands in its file."""
+    from autopilot import follower as follower_mod
+
+    log_path = tmp_path / "osu999.log"
+    framework = logging.getLogger("sfmc.osu999.FOLLOW")
+    framework.setLevel(logging.INFO)  # as sfmc-follow's setup_logging does
+    handler = logging.FileHandler(log_path)
+    framework.addHandler(handler)
+    try:
+        PredictedTrackFollower({"predictions_dir": "p"}, Queue(), Queue())
+    finally:
+        framework.removeHandler(handler)
+        follower_mod.logger.handlers.clear()
+        follower_mod.logger.propagate = True
+        handler.close()
+    assert "Loaded config" in log_path.read_text()
+
+
 # ── FALLBACK notification edges ─────────────────────────────────
 
 
