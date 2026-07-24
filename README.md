@@ -31,6 +31,8 @@ glider arrives, validate the waypoint against a geofence, and send it
   recorded float-6000 track fixture (`uv run pytest`).
 - `examples/simple_demo/` — minimal first example (fixed waypoint
   list, replayed mock dialog).
+- `deploy/autopilot@.service` — templated systemd unit, one instance
+  per glider (see Deploy on the VM, below).
 
 ## Simulate
 
@@ -153,11 +155,13 @@ inherit group-write instead of landing root- or single-user-owned.
 
 ### systemd
 
-One unit per glider, e.g. `/etc/systemd/system/autopilot-osusim.service`:
+A single templated unit, `deploy/autopilot@.service`, covers every
+glider — `%i` is substituted with the instance name at every point it
+appears (`--glider`, the config path, the log path):
 
 ```ini
 [Unit]
-Description=Glider autopilot follower for osusim
+Description=Glider autopilot follower for %i
 After=network-online.target
 Wants=network-online.target
 
@@ -166,11 +170,11 @@ User=autopilot
 Group=glider_pilots
 UMask=0002
 WorkingDirectory=/srv/autopilot
-ExecStart=/opt/autopilot/.venv/bin/sfmc-follow --glider osusim \
+ExecStart=/opt/autopilot/.venv/bin/sfmc-follow --glider %i \
     --follower /opt/autopilot/src/autopilot/follower.py \
-    --config /srv/autopilot/osusim_config.yaml \
+    --config /srv/autopilot/%i_config.yaml \
     --credentials /etc/autopilot/credentials.json \
-    --logfile /srv/autopilot/logs/osusim.log \
+    --logfile /srv/autopilot/logs/%i.log \
     --notify-email your.email@oregonstate.edu \
     --notify-from glider-autopilot@oregonstate.edu
 Restart=on-failure
@@ -180,26 +184,35 @@ RestartSec=30
 WantedBy=multi-user.target
 ```
 
-`--notify-from` matters — see above. To track another glider today,
-copy this file to `autopilot-<glider>.service` and swap every
-`osusim` for the new name (config path, log path, `--glider`); a
-templated unit that removes this duplication is planned.
-
-Bring a unit up and keep it running across reboots:
+`--notify-from` matters — see above. Install it once:
 
 ```sh
-sudo systemctl daemon-reload          # after creating/editing a unit file
-sudo systemctl enable --now autopilot-osusim
+sudo cp /opt/autopilot/deploy/autopilot@.service /etc/systemd/system/
+sudo systemctl daemon-reload
 ```
 
-After any change — a new/edited unit file, a config edit to a key
-that isn't in `HOT_KEYS` (fence, safe point, `sequence_number`,
-paths), or a code update (below) — restart it:
+Tracking a glider then requires only a config file at the convention
+the template expects — `/srv/autopilot/<glider>_config.yaml` — and:
 
 ```sh
-sudo systemctl restart autopilot-osusim
-systemctl status autopilot-osusim     # confirm it came back up
-journalctl -u autopilot-osusim -f     # live tail: framework + follower
+sudo systemctl enable --now autopilot@osusim    # turn autopilot ON for osusim
+sudo systemctl disable --now autopilot@osusim   # turn it OFF
+```
+
+Each instance (`autopilot@osusim`, `autopilot@osu684`, ...) is an
+independent unit — starting, stopping, or restarting one never touches
+another. If migrating from a hand-written `autopilot-<glider>.service`
+predating this template, `disable --now` the old unit first so two
+processes never subscribe to the same glider's dialog at once.
+
+After any change — a config edit to a key that isn't in `HOT_KEYS`
+(fence, safe point, `sequence_number`, paths), or a code update
+(below) — restart the instance:
+
+```sh
+sudo systemctl restart autopilot@osusim
+systemctl status autopilot@osusim     # confirm it came back up
+journalctl -u autopilot@osusim -f     # live tail: framework + follower
 ```
 
 `--logfile` (above) captures the same lines to a rotating file, but
@@ -223,7 +236,9 @@ uv lock --upgrade-package sfmc-api && uv sync  # only if sfmc-api itself
                                                 # was updated upstream —
                                                 # git pull alone won't
                                                 # fetch its new commits
-sudo systemctl restart autopilot-osusim        # and any other glider units
+for u in $(systemctl list-units 'autopilot@*' --plain --no-legend | cut -d' ' -f1); do
+    sudo systemctl restart "$u"                # every enabled glider instance
+done
 ```
 
 `/srv/autopilot` is untouched by any of this — configs, predictions,

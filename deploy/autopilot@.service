@@ -1,0 +1,22 @@
+[Unit]
+Description=Glider autopilot follower for %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=autopilot
+Group=glider_pilots
+UMask=0002
+WorkingDirectory=/srv/autopilot
+ExecStart=/opt/autopilot/.venv/bin/sfmc-follow --glider %i \
+    --follower /opt/autopilot/src/autopilot/follower.py \
+    --config /srv/autopilot/%i_config.yaml \
+    --credentials /etc/autopilot/credentials.json \
+    --logfile /srv/autopilot/logs/%i.log \
+    --notify-email your.email@oregonstate.edu \
+    --notify-from glider-autopilot@oregonstate.edu
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
