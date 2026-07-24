@@ -115,5 +115,12 @@ Email alerts use sfmc-api's notification system: add
 the `sfmc-follow` command. That enables both the framework's sustained
 SFMC-disconnect alerts (`--notify-after`, `--notify-repeat`) and this
 follower's FALLBACK entry/reminder/recovery emails
-(`fallback_reminder_h` in the config). SMTP defaults to
-localhost:25; see `sfmc-follow --help` for the `--smtp-*` options.
+(`fallback_reminder_h` in the config), plus a one-off "autopilot
+started" email on every service start/restart — a live test of the
+whole delivery path without waiting for a real FALLBACK. SMTP defaults
+to localhost:25; see `sfmc-follow --help` for the `--smtp-*` options.
+**Also set `--notify-from`** to an address your relay will actually
+deliver — the default (`sfmc-follow@<hostname>`) is often an
+unregistered mailbox that gets silently dropped downstream. Verify
+delivery end-to-end with `uv run python examples/send_test_email.py
+you@example.edu --from your-notify-from@example.edu`.
