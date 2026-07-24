@@ -147,6 +147,33 @@ class PredictedTrackFollower(BaseFollower):
             raise ValueError(f"config_file is not readable: {self.config_file}")
         self._log_config("Loaded config")
 
+    def set_notifier(self, notifier) -> None:
+        """Attach the notifier, then send a one-off startup confirmation.
+
+        Called by the sfmc-follow framework once, after construction
+        (so ``--notify-email``/``--notify-from`` are already known).
+        Every service start or restart thus doubles as a live test of
+        the whole delivery path — a broken sender address (the actual
+        cause of a silent week-long outage once) surfaces in minutes
+        instead of waiting for a real FALLBACK.  A no-op, like any
+        :meth:`notify` call, when no notifier was configured (no
+        ``--notify-email``, or replay/dry-run mode).
+        """
+        super().set_notifier(notifier)
+        self.notify(
+            "startup",
+            "autopilot started",
+            "The autopilot follower just started (or restarted).  This "
+            "confirms the notify path is working; no action is needed "
+            "unless the restart is unexpected.\n\n"
+            f"sequence_number: {self.sequence_number}\n"
+            f"waypoint_lead_h: {self.waypoint_lead_h}\n"
+            f"geofence: {self.config.get('geofence') or 'none'}\n"
+            "safe_point: "
+            f"{self.safe_point or 'none (FALLBACK holds the last waypoint)'}\n",
+            min_gap_seconds=0.0,
+        )
+
     # ── Config reload ───────────────────────────────────────────
 
     def _config_stat(self) -> float | None:

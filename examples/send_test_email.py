@@ -27,7 +27,9 @@ def main() -> None:
         default=None,
         help="From address (default: same as 'to')",
     )
-    ap.add_argument("--host", default="localhost", help="SMTP relay (default: %(default)s)")
+    ap.add_argument(
+        "--host", default="localhost", help="SMTP relay (default: %(default)s)"
+    )
     ap.add_argument("--port", type=int, default=25, help="default: %(default)s")
     args = ap.parse_args()
 

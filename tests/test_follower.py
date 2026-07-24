@@ -113,6 +113,21 @@ def test_adopts_framework_log_handlers(tmp_path):
     assert "Loaded config" in log_path.read_text()
 
 
+def test_set_notifier_sends_startup_confirmation():
+    follower = PredictedTrackFollower({"predictions_dir": "p"}, Queue(), Queue())
+    calls = []
+    follower.notify = lambda key, summary, detail, *, min_gap_seconds: calls.append(
+        (key, summary, detail, min_gap_seconds)
+    )
+
+    follower.set_notifier(object())  # any sentinel; BaseFollower just stores it
+
+    assert len(calls) == 1
+    key, summary, detail, gap = calls[0]
+    assert key == "startup" and gap == 0.0
+    assert "sequence_number" in detail
+
+
 # ── FALLBACK notification edges ─────────────────────────────────
 
 
