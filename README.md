@@ -25,7 +25,7 @@ glider arrives, validate the waypoint against a geofence, and send it
   (24 h hindcast + 12 h forecast, 2-h steps), closed-loop stepper
   (0.25 m/s, fixed-heading dives with overshoot, random surfacing
   offset ≤ 250 m per hour underwater).
-- `osu999_config.yaml` — runtime config (speed, fence,
+- `osu999_config.yaml` — runtime config (waypoint lead times, fence,
   safe point, thresholds, paths).
 - `tests/` — geofence unit tests + closed-loop regressions against a
   recorded float-6000 track fixture (`uv run pytest`).
@@ -104,11 +104,13 @@ in the config (10 → `goto_l10.ma`). Capture a real dialog log with
 
 The effective config is logged at startup. Set `config_file:` in the
 YAML (its own path) to enable live reload: the follower re-reads the
-file at each surfacing and applies changed thresholds, speed,
-`num_legs_to_run`, `plot_bounds`, and `pattern` without a restart,
-logging each change. Structural settings (fence, safe point,
-`sequence_number`, paths) still require a restart, and a broken edit
-keeps the previous settings rather than stopping the follower.
+file at each surfacing and applies changed `waypoint_lead_h`,
+`target_radius_km`, `num_legs_to_run`, `max_prediction_age_h`,
+`max_waypoint_jump_km`, `fallback_reminder_h`, `plot_bounds`, and
+`pattern` without a restart, logging each change. Structural settings
+(fence, safe point, `sequence_number`, paths) still require a
+restart, and a broken edit keeps the previous settings rather than
+stopping the follower.
 
 Email alerts use sfmc-api's notification system: add
 `--notify-email ADDR` (repeatable, all recipients get every alert) to
@@ -124,3 +126,105 @@ deliver — the default (`sfmc-follow@<hostname>`) is often an
 unregistered mailbox that gets silently dropped downstream. Verify
 delivery end-to-end with `uv run python examples/send_test_email.py
 you@example.edu --from your-notify-from@example.edu`.
+
+## Deploy on the VM
+
+Code and operational state are split into two directories, so a
+`git pull` can never touch predictions, plots, or logs:
+
+- `/opt/autopilot` — the git checkout and its `.venv` (`uv sync`
+  after cloning). Read-only in day-to-day operation; only touched to
+  update the code.
+- `/srv/autopilot` — per-glider config YAML, and the
+  `predictions/`, `plots/`, `goto_archive/`, `logs/`, `boundaries/`
+  directories the follower reads and writes at runtime. This is the
+  systemd units' `WorkingDirectory`, since the follower resolves the
+  config's relative paths (`predictions_dir`, `plot_dir`, etc.)
+  against the current directory in live mode, not the config file's
+  location.
+- `/etc/autopilot/credentials.json` — SFMC credentials, `660`
+  `autopilot:glider_pilots`.
+
+A dedicated `autopilot` system user owns and runs the services. Pilots
+who need to edit configs belong to the `glider_pilots` group, which
+owns `/srv/autopilot`; the directories are setgid with a default ACL
+(`setfacl -R -d -m g:glider_pilots:rwX /srv/autopilot`) so new files
+inherit group-write instead of landing root- or single-user-owned.
+
+### systemd
+
+One unit per glider, e.g. `/etc/systemd/system/autopilot-osusim.service`:
+
+```ini
+[Unit]
+Description=Glider autopilot follower for osusim
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=autopilot
+Group=glider_pilots
+UMask=0002
+WorkingDirectory=/srv/autopilot
+ExecStart=/opt/autopilot/.venv/bin/sfmc-follow --glider osusim \
+    --follower /opt/autopilot/src/autopilot/follower.py \
+    --config /srv/autopilot/osusim_config.yaml \
+    --credentials /etc/autopilot/credentials.json \
+    --logfile /srv/autopilot/logs/osusim.log \
+    --notify-email your.email@oregonstate.edu \
+    --notify-from glider-autopilot@oregonstate.edu
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`--notify-from` matters — see above. To track another glider today,
+copy this file to `autopilot-<glider>.service` and swap every
+`osusim` for the new name (config path, log path, `--glider`); a
+templated unit that removes this duplication is planned.
+
+Bring a unit up and keep it running across reboots:
+
+```sh
+sudo systemctl daemon-reload          # after creating/editing a unit file
+sudo systemctl enable --now autopilot-osusim
+```
+
+After any change — a new/edited unit file, a config edit to a key
+that isn't in `HOT_KEYS` (fence, safe point, `sequence_number`,
+paths), or a code update (below) — restart it:
+
+```sh
+sudo systemctl restart autopilot-osusim
+systemctl status autopilot-osusim     # confirm it came back up
+journalctl -u autopilot-osusim -f     # live tail: framework + follower
+```
+
+`--logfile` (above) captures the same lines to a rotating file, but
+only while the glider is at the surface — long journal silence while
+it's underwater is normal; `systemctl is-active` plus a journal tail
+is the real liveness check.
+
+A config edit to a `HOT_KEYS` field (`waypoint_lead_h`,
+`max_waypoint_jump_km`, etc., when `config_file:` is set in the YAML)
+does **not** need a restart — it's picked up at the next surfacing.
+
+### Updating the code
+
+`/opt/autopilot` is an ordinary git checkout:
+
+```sh
+cd /opt/autopilot
+git pull
+uv sync                                        # this repo's own deps
+uv lock --upgrade-package sfmc-api && uv sync  # only if sfmc-api itself
+                                                # was updated upstream —
+                                                # git pull alone won't
+                                                # fetch its new commits
+sudo systemctl restart autopilot-osusim        # and any other glider units
+```
+
+`/srv/autopilot` is untouched by any of this — configs, predictions,
+plots, and logs all survive a code update.
