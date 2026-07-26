@@ -8,13 +8,14 @@ User=autopilot
 Group=glider_pilots
 UMask=0002
 WorkingDirectory=/srv/autopilot
-ExecStart=/opt/autopilot/.venv/bin/sfmc-follow --glider %i \
+# --hostname, --notify-email, --notify-from are filled in by
+# autopilot-follow from this glider's own config (sfmc_hostname,
+# notify_email, notify_from) — see osu999_config.yaml.
+ExecStart=/opt/autopilot/.venv/bin/autopilot-follow --glider %i \
     --follower /opt/autopilot/src/autopilot/follower.py \
     --config /srv/autopilot/%i_config.yaml \
     --credentials /etc/autopilot/credentials.json \
-    --logfile /srv/autopilot/logs/%i.log \
-    --notify-email your.email@oregonstate.edu \
-    --notify-from glider-autopilot@oregonstate.edu
+    --logfile /srv/autopilot/logs/%i.log
 Restart=on-failure
 RestartSec=30
 

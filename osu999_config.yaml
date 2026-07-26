@@ -1,5 +1,27 @@
 # Configuration for autopilot.follower (PredictedTrackFollower).
 
+# ── Launcher-only keys ──────────────────────────────────────────
+# Read by the autopilot-follow launcher to fill in sfmc-follow CLI
+# flags; the follower itself never sees these.  An explicit CLI flag
+# (e.g. a one-off --hostname or --notify-email) always overrides the
+# value here.  Changing any of these still needs a restart — they
+# configure the process at startup, not something re-read per
+# surfacing.
+
+# Which SFMC server this glider is registered on, when credentials.json
+# holds more than one host.  Omit if credentials.json has a single
+# host, or when passing --hostname directly.
+# sfmc_hostname: gliderfmc0.ceoas.oregonstate.edu
+
+# Pilot email alert recipients -> --notify-email (repeatable); a
+# single string or a list.  Omit to disable email alerts entirely.
+# notify_email: [jesse.cusack@oregonstate.edu]
+
+# From address -> --notify-from.  Set this to a mailbox your relay
+# will actually deliver: the default (sfmc-follow@<hostname>) is often
+# unregistered and gets silently dropped downstream (see Run live).
+# notify_from: glider-autopilot@oregonstate.edu
+
 # Path to this file.  When set, the follower re-reads it at each
 # surfacing and applies changes to waypoint_lead_h, target_radius_km,
 # num_legs_to_run, max_prediction_age_h, max_waypoint_jump_km,
@@ -64,9 +86,9 @@ bathymetry: bathymetry/gebco_2026_n35.0_s32.0_w-122.0_e-117.0.nc
 # (e.g. goto_l10_20260702T120000.ma).
 archive_dir: goto_archive
 
-# Email alerts (FALLBACK transitions and sustained SFMC disconnects)
-# are configured on the sfmc-follow command line, not here:
-#   --notify-email ADDR   (repeatable; omit to disable)
-#   --notify-after/--notify-repeat/--smtp-host/--smtp-port/--notify-from
+# Email alerts: recipients and sender go above (notify_email,
+# notify_from, launcher-only).  --notify-after/--notify-repeat/
+# --smtp-host/--smtp-port have no config equivalent yet — set them on
+# the sfmc-follow command line if the defaults don't fit.
 # Hours between "still in FALLBACK" reminder emails.
 # fallback_reminder_h: 6

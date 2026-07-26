@@ -33,6 +33,10 @@ glider arrives, validate the waypoint against a geofence, and send it
   list, replayed mock dialog).
 - `deploy/autopilot@.service` — templated systemd unit, one instance
   per glider (see Deploy on the VM, below).
+- `src/autopilot/launch.py` — `autopilot-follow`, a thin wrapper
+  around `sfmc-follow` that fills in `--hostname`, `--notify-email`,
+  and `--notify-from` from the glider's own config (see Deploy on the
+  VM, below), keeping them out of the shared systemd unit.
 
 ## Simulate
 
@@ -114,17 +118,18 @@ file at each surfacing and applies changed `waypoint_lead_h`,
 restart, and a broken edit keeps the previous settings rather than
 stopping the follower.
 
-Email alerts use sfmc-api's notification system: add
-`--notify-email ADDR` (repeatable, all recipients get every alert) to
-the `sfmc-follow` command. That enables both the framework's sustained
-SFMC-disconnect alerts (`--notify-after`, `--notify-repeat`) and this
-follower's FALLBACK entry/reminder/recovery emails
-(`fallback_reminder_h` in the config), plus a one-off "autopilot
-started" email on every service start/restart — a live test of the
-whole delivery path without waiting for a real FALLBACK. SMTP defaults
-to localhost:25; see `sfmc-follow --help` for the `--smtp-*` options.
-**Also set `--notify-from`** to an address your relay will actually
-deliver — the default (`sfmc-follow@<hostname>`) is often an
+Email alerts use sfmc-api's notification system: give it at least one
+recipient (`--notify-email ADDR`, repeatable, or `notify_email:` in
+the config — see `autopilot-follow`, below) to enable both the
+framework's sustained SFMC-disconnect alerts (`--notify-after`,
+`--notify-repeat`) and this follower's FALLBACK entry/reminder/recovery
+emails (`fallback_reminder_h` in the config), plus a one-off
+"autopilot started" email on every service start/restart — a live
+test of the whole delivery path without waiting for a real FALLBACK.
+SMTP defaults to localhost:25; see `sfmc-follow --help` for the
+`--smtp-*` options (CLI-only, no config equivalent yet).
+**Also set a `notify_from`/`--notify-from`** address your relay will
+actually deliver — the default (`sfmc-follow@<hostname>`) is often an
 unregistered mailbox that gets silently dropped downstream. Verify
 delivery end-to-end with `uv run python examples/send_test_email.py
 you@example.edu --from your-notify-from@example.edu`.
@@ -152,6 +157,41 @@ who need to edit configs belong to the `glider_pilots` group, which
 owns `/srv/autopilot`; the directories are setgid with a default ACL
 (`setfacl -R -d -m g:glider_pilots:rwX /srv/autopilot`) so new files
 inherit group-write instead of landing root- or single-user-owned.
+
+### autopilot-follow: config-driven CLI flags
+
+`deploy/autopilot@.service` runs `autopilot-follow`, not
+`sfmc-follow` directly — a thin wrapper that fills in a few
+`sfmc-follow` flags from the glider's own `--config` YAML, so they
+don't need to live in the (root-owned, shared-across-gliders) unit
+file:
+
+| Config key (launcher-only) | CLI flag         |
+|-----------------------------|------------------|
+| `sfmc_hostname`             | `--hostname`     |
+| `notify_email` (str or list)| `--notify-email` |
+| `notify_from`               | `--notify-from`  |
+
+An explicit flag on the command line always wins over the config
+value — useful for a one-off override (e.g. testing a normally
+gliderfmc0 config against gliderfmc1, or a manual `--notify-email` for
+a single run). These are startup-time values, like `--hostname`
+itself: changing them still needs a restart, unlike the `HOT_KEYS`
+config fields above.
+
+`sfmc_hostname` matters once more than one server is in play:
+`credentials.json` uses **per-host** entries, so one file holds
+credentials for as many servers as needed —
+
+```json
+{
+  "gliderfmc1.ceoas.oregonstate.edu": { "apiCredentials": { "clientId": "...", "secret": "..." } },
+  "gliderfmc0.ceoas.oregonstate.edu": { "apiCredentials": { "clientId": "...", "secret": "..." } }
+}
+```
+
+— and with only one host in the file it's used automatically, but
+once a second is added, every follower must say which one it means.
 
 ### systemd
 
