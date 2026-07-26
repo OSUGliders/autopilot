@@ -88,9 +88,14 @@ class PredictedTrackFollower(BaseFollower):
     # Config keys re-applied at each surfacing when ``config_file`` is
     # set, so they can be edited without a restart:
     # {yaml key: (attribute, cast, default)}.  Everything else —
-    # fence, safe_point, sequence_number, paths — is read once at
-    # startup (validation failures must happen there, not at sea).
+    # fence, safe_point, sequence_number, plot/archive paths — is read
+    # once at startup (validation failures must happen there, not at
+    # sea).
     HOT_KEYS = {
+        # The tracking target: which drifter's predictions to follow.
+        # Required at startup; a reload that drops or blanks it keeps
+        # the previous value instead (see _apply_hot).
+        "predictions_dir": ("predictions_dir", Path, None),
         "pattern": ("pattern", str, "drifter_*.csv"),
         "target_radius_km": ("target_radius_km", float, 4.0),
         # Lead times (hours ahead of the surfacing) at which the
@@ -110,7 +115,8 @@ class PredictedTrackFollower(BaseFollower):
     def __init__(self, config, queue_in, queue_out):
         super().__init__(config, queue_in, queue_out)
         _adopt_framework_handlers()
-        self.predictions_dir = Path(config["predictions_dir"])
+        if not config.get("predictions_dir"):
+            raise ValueError("predictions_dir is required")
         self._apply_hot(config)
         self.sequence_number = int(config.get("sequence_number", 10))
         self.plot_dir = Path(config.get("plot_dir", "plots"))
@@ -189,6 +195,15 @@ class PredictedTrackFollower(BaseFollower):
         changes = []
         for key, (attr, cast, default) in self.HOT_KEYS.items():
             value = config.get(key, default)
+            if key == "predictions_dir" and not value:
+                # Required; a reload that drops or blanks it must not
+                # stop the follower from tracking where it last was.
+                if hasattr(self, attr):
+                    logger.warning(
+                        "predictions_dir missing from reloaded config; keeping %s",
+                        getattr(self, attr),
+                    )
+                    continue
             if cast is not None and value is not None:
                 value = cast(value)
             old = getattr(self, attr, value)
@@ -201,7 +216,6 @@ class PredictedTrackFollower(BaseFollower):
         """Log the effective config (defaults applied) at INFO."""
         eff = {key: getattr(self, attr) for key, (attr, _, _) in self.HOT_KEYS.items()}
         eff.update(
-            predictions_dir=self.predictions_dir,
             plot_dir=self.plot_dir,
             archive_dir=self.archive_dir,
             sequence_number=self.sequence_number,

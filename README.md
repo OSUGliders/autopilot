@@ -110,13 +110,17 @@ in the config (10 → `goto_l10.ma`). Capture a real dialog log with
 
 The effective config is logged at startup. Set `config_file:` in the
 YAML (its own path) to enable live reload: the follower re-reads the
-file at each surfacing and applies changed `waypoint_lead_h`,
-`target_radius_km`, `num_legs_to_run`, `max_prediction_age_h`,
-`max_waypoint_jump_km`, `fallback_reminder_h`, `plot_bounds`, and
-`pattern` without a restart, logging each change. Structural settings
-(fence, safe point, `sequence_number`, paths) still require a
-restart, and a broken edit keeps the previous settings rather than
-stopping the follower.
+file at each surfacing and applies changed `predictions_dir`,
+`waypoint_lead_h`, `target_radius_km`, `num_legs_to_run`,
+`max_prediction_age_h`, `max_waypoint_jump_km`, `fallback_reminder_h`,
+`plot_bounds`, and `pattern` without a restart, logging each change —
+so switching which drifter a glider tracks, or retargeting it to a
+different prediction directory, is a config edit, not a restart.
+`predictions_dir` is still required at startup, and a reload that
+drops or blanks it keeps flying on the previous target rather than
+breaking. Everything else (fence, safe point, `sequence_number`,
+plot/archive paths) still requires a restart, and a broken edit keeps
+the previous settings rather than stopping the follower.
 
 Email alerts use sfmc-api's notification system: give it at least one
 recipient (`--notify-email ADDR`, repeatable, or `notify_email:` in

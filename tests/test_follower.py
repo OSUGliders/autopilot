@@ -8,6 +8,7 @@ by zero.
 import logging
 import os
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from queue import Queue
 from types import SimpleNamespace
 
@@ -37,6 +38,13 @@ def test_read_track_dedups_timestamps(tmp_path):
     )
     assert extrapolated
     assert lat > 33.20
+
+
+def test_predictions_dir_required():
+    import pytest
+
+    with pytest.raises(ValueError, match="predictions_dir"):
+        PredictedTrackFollower({}, Queue(), Queue())
 
 
 # ── Live config reload ──────────────────────────────────────────
@@ -76,6 +84,28 @@ def test_reload_applies_hot_threshold(tmp_path):
     # Unchanged file: nothing to do.
     follower._maybe_reload()
     assert follower.max_jump_km == 12.0
+
+
+def test_reload_switches_predictions_dir(tmp_path):
+    follower, cfg_path = reloading_follower(tmp_path)
+    assert follower.predictions_dir == Path("predictions")
+
+    new = yaml.safe_load(cfg_path.read_text())
+    new["predictions_dir"] = "predictions/6560"
+    rewrite(cfg_path, yaml.safe_dump(new))
+    follower._maybe_reload()
+    assert follower.predictions_dir == Path("predictions/6560")
+
+
+def test_reload_keeps_predictions_dir_if_blanked(tmp_path, caplog):
+    follower, cfg_path = reloading_follower(tmp_path)
+    new = yaml.safe_load(cfg_path.read_text())
+    del new["predictions_dir"]
+    with caplog.at_level(logging.WARNING, logger="sfmc.predicted_track"):
+        rewrite(cfg_path, yaml.safe_dump(new))
+        follower._maybe_reload()
+    assert follower.predictions_dir == Path("predictions")
+    assert any("predictions_dir missing" in r.message for r in caplog.records)
 
 
 def test_reload_keeps_settings_on_broken_yaml(tmp_path):
