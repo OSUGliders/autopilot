@@ -21,6 +21,7 @@ autopilot-follow = "autopilot.launch:main"
 
 [dependency-groups]
 dev = [
+    "geopandas>=1.1.4",
     "ipykernel>=7.3.0",
     "pytest>=8",
     "ruff>=0.15.20",

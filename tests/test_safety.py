@@ -95,6 +95,13 @@ def test_no_fence_still_checks_staleness():
     assert v.reason == "STALE"
 
 
+def test_nan_waypoint_rejected_without_fence():
+    # NaN > threshold is False, so without an explicit finiteness
+    # check a NaN waypoint would sail through an unfenced pipeline.
+    v = check_waypoint(None, *INSIDE, (float("nan"), float("nan")), 1.0, 9.0, 30.0)
+    assert not v.ok and v.reason == "BAD_COORDS"
+
+
 # ── check_next_waypoint (later waypoints of a goto list) ────────────
 
 
@@ -114,3 +121,21 @@ def test_next_waypoint_concave_leg(fence):
 
 def test_next_waypoint_no_fence():
     assert check_next_waypoint(None, INSIDE, OUTSIDE_NORTH).ok
+
+
+def test_next_waypoint_jump_rejected():
+    # A 0,0 bad-data row would put a later waypoint in the Gulf of
+    # Guinea; the fence catches that when configured, the jump limit
+    # must catch it when not.
+    v = check_next_waypoint(None, INSIDE, (0.0, 0.0), max_jump_km=30.0)
+    assert not v.ok and v.reason == "JUMP"
+
+
+def test_next_waypoint_jump_within_limit_ok():
+    v = check_next_waypoint(None, INSIDE, (-120.05, 33.62), max_jump_km=30.0)
+    assert v.ok
+
+
+def test_next_waypoint_nan_rejected():
+    v = check_next_waypoint(None, INSIDE, (float("nan"), 33.6), max_jump_km=30.0)
+    assert not v.ok and v.reason == "BAD_COORDS"

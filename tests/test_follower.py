@@ -47,6 +47,62 @@ def test_predictions_dir_required():
         PredictedTrackFollower({}, Queue(), Queue())
 
 
+def test_read_track_assumes_utc_for_naive_times(tmp_path):
+    path = tmp_path / "drifter_20260322T0000.csv"
+    path.write_text(
+        "time,latitude,longitude\n"
+        "2026-03-22T00:00:00,33.00,-117.70\n"  # no UTC offset
+        "2026-03-22T02:00:00+00:00,33.10,-117.60\n"
+    )
+    track = PredictedTrackFollower._read_track(path)
+    assert len(track) == 2  # mixed naive/aware must not raise on sort
+    assert all(t.tzinfo is not None for t, _, _ in track)
+
+
+def test_read_track_drops_non_finite_rows(tmp_path):
+    path = tmp_path / "drifter_20260322T0000.csv"
+    path.write_text(
+        "time,latitude,longitude\n"
+        "2026-03-22T00:00:00+00:00,33.00,-117.70\n"
+        "2026-03-22T02:00:00+00:00,nan,-117.60\n"
+        "2026-03-22T04:00:00+00:00,33.20,inf\n"
+        "2026-03-22T06:00:00+00:00,33.30,-117.40\n"
+    )
+    track = PredictedTrackFollower._read_track(path)
+    assert [lat for _, lat, _ in track] == [33.00, 33.30]
+
+
+def test_corrupt_prediction_degrades_to_fallback(tmp_path):
+    """A file that cannot be parsed must yield FALLBACK + notification,
+    not an exception that loses the surfacing entirely."""
+    predictions = tmp_path / "predictions"
+    predictions.mkdir()
+    (predictions / "drifter_20260322T0000.csv").write_text(
+        "time,latitude,longitude\ngarbage,not-a-float,??\n"
+    )
+    queue_out: Queue = Queue()
+    follower = PredictedTrackFollower(
+        {
+            "predictions_dir": str(predictions),
+            "plot_dir": str(tmp_path / "plots"),
+            "archive_dir": str(tmp_path / "archive"),
+        },
+        Queue(),
+        queue_out,
+    )
+    event = SimpleNamespace(
+        vehicle_name="osu999",
+        timestamp=datetime(2026, 3, 22, 1, 0, tzinfo=UTC),
+        gps_lat=33.1,
+        gps_lon=-117.7,
+    )
+
+    follower.on_surfacing(event)  # must not raise
+
+    assert queue_out.empty(), "no goto may be sent from a corrupt prediction"
+    assert follower._in_fallback, "pilot notification path must have fired"
+
+
 # ── Live config reload ──────────────────────────────────────────
 
 
@@ -112,6 +168,27 @@ def test_reload_keeps_settings_on_broken_yaml(tmp_path):
     follower, cfg_path = reloading_follower(tmp_path)
     rewrite(cfg_path, "predictions_dir: [unclosed\n")
     follower._maybe_reload()
+    assert follower.max_jump_km == 30.0
+
+
+def test_reload_skips_invalid_value_applies_the_rest(tmp_path):
+    """One bad value must not raise, block other keys, or half-apply."""
+    follower, cfg_path = reloading_follower(tmp_path)
+    new = yaml.safe_load(cfg_path.read_text())
+    new["max_waypoint_jump_km"] = 12.0
+    new["num_legs_to_run"] = "forever"  # int() raises
+    rewrite(cfg_path, yaml.safe_dump(new))
+
+    follower._maybe_reload()  # must not raise
+
+    assert follower.max_jump_km == 12.0  # good key applied
+    assert follower.num_legs_to_run == -1  # bad key kept at old value
+
+
+def test_reload_keeps_settings_on_non_mapping_yaml(tmp_path):
+    follower, cfg_path = reloading_follower(tmp_path)
+    rewrite(cfg_path, "- not\n- a\n- mapping\n")
+    follower._maybe_reload()  # must not raise
     assert follower.max_jump_km == 30.0
 
 

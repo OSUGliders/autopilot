@@ -36,9 +36,9 @@ class Verdict:
     """Outcome of the safety checks for one candidate waypoint."""
 
     ok: bool
-    reason: (
-        str  # OK, NO_PREDICTION, STALE, GLIDER_OUTSIDE, FENCE_WAYPOINT, FENCE_LEG, JUMP
-    )
+    # OK, NO_PREDICTION, STALE, BAD_COORDS, GLIDER_OUTSIDE,
+    # FENCE_WAYPOINT, FENCE_LEG, JUMP
+    reason: str
     detail: str = ""
 
 
@@ -138,9 +138,10 @@ def check_waypoint(
     """Run the safety pipeline on one candidate waypoint (lon, lat).
 
     Checks in order: a usable prediction exists and is fresh, the
-    glider is inside the fence, the waypoint is inside the buffered
-    fence, the leg stays inside the fence, and the commanded jump is
-    plausible.  Returns the first failure, or OK.
+    coordinates are finite, the glider is inside the fence, the
+    waypoint is inside the buffered fence, the leg stays inside the
+    fence, and the commanded jump is plausible.  Returns the first
+    failure, or OK.
     """
     if waypoint is None:
         return Verdict(False, "NO_PREDICTION", "no usable prediction file")
@@ -151,6 +152,14 @@ def check_waypoint(
             f"prediction is {prediction_age_h:.1f} h old (max {max_age_h:.0f} h)",
         )
     wpt_lon, wpt_lat = waypoint
+    # NaN defeats every plain comparison below (NaN > x is False), so
+    # without this a NaN waypoint would pass an unfenced pipeline.
+    if not (math.isfinite(wpt_lon) and math.isfinite(wpt_lat)):
+        return Verdict(
+            False,
+            "BAD_COORDS",
+            f"waypoint has non-finite coordinates: {wpt_lat}, {wpt_lon}",
+        )
     if fence is not None:
         if not fence.contains(glider_lon, glider_lat):
             return Verdict(
@@ -181,23 +190,41 @@ def check_next_waypoint(
     fence: Geofence | None,
     prev: tuple[float, float],
     waypoint: tuple[float, float],
+    max_jump_km: float = math.inf,
 ) -> Verdict:
     """Validate a follow-up waypoint reached from *prev* (both (lon, lat)).
 
     The first waypoint of a goto list goes through
-    :func:`check_waypoint`; each later one only needs to be inside the
-    buffered fence with the leg from its predecessor staying inside.
+    :func:`check_waypoint`; each later one must have finite
+    coordinates, lie inside the buffered fence with the leg from its
+    predecessor staying inside, and sit within *max_jump_km* of its
+    predecessor — a bad row inside a prediction (a 0,0 sentinel, a
+    position spike) can put a later waypoint anywhere, and the fence
+    alone would not catch that in an unfenced config.
     """
-    if fence is None:
-        return Verdict(True, "OK")
     wpt_lon, wpt_lat = waypoint
-    if not fence.contains_buffered(wpt_lon, wpt_lat):
+    if not (math.isfinite(wpt_lon) and math.isfinite(wpt_lat)):
         return Verdict(
             False,
-            "FENCE_WAYPOINT",
-            f"waypoint {wpt_lat:.4f}, {wpt_lon:.4f} is outside the fence "
-            f"minus {fence.margin_km:.1f} km margin",
+            "BAD_COORDS",
+            f"waypoint has non-finite coordinates: {wpt_lat}, {wpt_lon}",
         )
-    if not fence.leg_inside(prev[0], prev[1], wpt_lon, wpt_lat):
-        return Verdict(False, "FENCE_LEG", "leg between waypoints exits the fence")
+    if fence is not None:
+        if not fence.contains_buffered(wpt_lon, wpt_lat):
+            return Verdict(
+                False,
+                "FENCE_WAYPOINT",
+                f"waypoint {wpt_lat:.4f}, {wpt_lon:.4f} is outside the fence "
+                f"minus {fence.margin_km:.1f} km margin",
+            )
+        if not fence.leg_inside(prev[0], prev[1], wpt_lon, wpt_lat):
+            return Verdict(False, "FENCE_LEG", "leg between waypoints exits the fence")
+    jump_km = _distance_km(prev[0], prev[1], wpt_lon, wpt_lat)
+    if jump_km > max_jump_km:
+        return Verdict(
+            False,
+            "JUMP",
+            f"waypoint is {jump_km:.0f} km from the previous one "
+            f"(max {max_jump_km:.0f} km)",
+        )
     return Verdict(True, "OK")

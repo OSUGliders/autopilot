@@ -191,8 +191,15 @@ class PredictedTrackFollower(BaseFollower):
             return None
 
     def _apply_hot(self, config: dict) -> list[str]:
-        """Set attributes for HOT_KEYS from *config*; list the changes."""
-        changes = []
+        """Set attributes for HOT_KEYS from *config*; list the changes.
+
+        Every value is validated (cast) before anything is applied, so
+        one bad value can never leave the keys half-applied.  A value
+        that fails its cast raises at startup (fail there, not at sea)
+        but is skipped with a warning on reload, keeping the previous
+        value.
+        """
+        staged: list[tuple[str, str, object]] = []
         for key, (attr, cast, default) in self.HOT_KEYS.items():
             value = config.get(key, default)
             if key == "predictions_dir" and not value:
@@ -204,8 +211,23 @@ class PredictedTrackFollower(BaseFollower):
                         getattr(self, attr),
                     )
                     continue
-            if cast is not None and value is not None:
-                value = cast(value)
+            try:
+                if cast is not None and value is not None:
+                    value = cast(value)
+            except (TypeError, ValueError):
+                if not hasattr(self, attr):
+                    raise
+                logger.warning(
+                    "Config %s has invalid value %r; keeping %s",
+                    key,
+                    value,
+                    getattr(self, attr),
+                )
+                continue
+            staged.append((key, attr, value))
+
+        changes = []
+        for key, attr, value in staged:
             old = getattr(self, attr, value)
             if value != old:
                 changes.append(f"{key}: {old} -> {value}")
@@ -248,19 +270,27 @@ class PredictedTrackFollower(BaseFollower):
         if mtime == self._config_mtime:
             return
         self._config_mtime = mtime
+        # One try around parse *and* apply: any surprise in the edited
+        # file (non-mapping YAML, unexpected value shapes) must keep
+        # the current settings rather than escape into on_surfacing
+        # and cost the surfacing.  _apply_hot stages casts before
+        # setting anything, so a caught failure is also atomic.
         try:
             with open(self.config_file) as f:
                 new = yaml.safe_load(f) or {}
+            if not isinstance(new, dict):
+                raise TypeError(f"config is not a mapping: {type(new).__name__}")
+            for key in sorted(set(self.config) | set(new)):
+                if key not in self.HOT_KEYS and self.config.get(key) != new.get(key):
+                    logger.warning(
+                        "Config %r changed on disk but requires a restart to apply",
+                        key,
+                    )
+            changes = self._apply_hot(new)
+            self.config = new
         except Exception:
             logger.exception("Config reload failed; keeping current settings")
             return
-        for key in sorted(set(self.config) | set(new)):
-            if key not in self.HOT_KEYS and self.config.get(key) != new.get(key):
-                logger.warning(
-                    "Config %r changed on disk but requires a restart to apply", key
-                )
-        changes = self._apply_hot(new)
-        self.config = new
         if changes:
             for change in changes:
                 logger.info("Config change: %s", change)
@@ -285,11 +315,32 @@ class PredictedTrackFollower(BaseFollower):
 
     @staticmethod
     def _read_track(path: Path) -> list[tuple[datetime, float, float]]:
+        """Parse a prediction CSV into a sorted, deduplicated track.
+
+        Timestamps without a UTC offset are taken as UTC (a mixed
+        naive/aware track would otherwise make sorting/interpolation
+        raise).  Rows with non-finite coordinates are dropped: NaN
+        interpolates to NaN waypoints, and NaN defeats plain ``>``
+        threshold comparisons downstream.
+        """
         track = []
+        dropped = 0
         with open(path, newline="") as f:
             for row in csv.DictReader(f):
                 t = datetime.fromisoformat(row["time"])
-                track.append((t, float(row["latitude"]), float(row["longitude"])))
+                if t.tzinfo is None:
+                    t = t.replace(tzinfo=UTC)
+                lat, lon = float(row["latitude"]), float(row["longitude"])
+                if not (math.isfinite(lat) and math.isfinite(lon)):
+                    dropped += 1
+                    continue
+                track.append((t, lat, lon))
+        if dropped:
+            logger.warning(
+                "Dropped %d row(s) with non-finite coordinates from %s",
+                dropped,
+                path.name,
+            )
         track.sort()
         # Drop duplicate timestamps (keep the last row): repeated times
         # would make interpolation divide by zero.
@@ -398,8 +449,7 @@ class PredictedTrackFollower(BaseFollower):
             holding = "is still holding at the safe point"
         else:
             action = (
-                "No new goto was sent; the glider keeps looping its last "
-                "commanded waypoint."
+                "No new goto was sent. Check num_legs_to_run behavior."
             )
             holding = "is still looping its last commanded waypoint"
         if not self._in_fallback:
@@ -444,21 +494,26 @@ class PredictedTrackFollower(BaseFollower):
         else:
             created, path = latest
             prediction_name = path.name
-            track = self._read_track(path)
-            if len(track) < 2:
-                logger.warning("Prediction file %s has fewer than 2 rows", path.name)
-                track = []
-
-        if track:
+            # A bad prediction file — malformed rows, deleted between
+            # glob and open, unparseable data — must degrade to
+            # FALLBACK (the safety gate treats no candidate as
+            # NO_PREDICTION), never lose the surfacing: an exception
+            # escaping on_surfacing is only logged by the framework,
+            # so the safe point and the pilot email would be skipped.
             try:
-                candidates, drifter_now, age_h = self._compute_waypoints(
-                    event, now, track, created, prediction_name
-                )
+                track = self._read_track(path)
+                if len(track) < 2:
+                    logger.warning(
+                        "Prediction file %s has fewer than 2 usable rows",
+                        path.name,
+                    )
+                    track = []
+                if track:
+                    candidates, drifter_now, age_h = self._compute_waypoints(
+                        event, now, track, created, prediction_name
+                    )
             except Exception:
-                # A bad prediction file must degrade to FALLBACK (the
-                # safety gate treats no candidate as NO_PREDICTION),
-                # never lose the surfacing.
-                logger.exception("Waypoint computation failed")
+                logger.exception("Prediction handling failed for %s", path.name)
                 candidates = []
 
         # ── Safety gate ─────────────────────────────────────────
@@ -506,7 +561,9 @@ class PredictedTrackFollower(BaseFollower):
             state = "NORMAL"
             waypoints = candidates[:1]
             for wpt in candidates[1:]:
-                v = check_next_waypoint(self.fence, waypoints[-1], wpt)
+                v = check_next_waypoint(
+                    self.fence, waypoints[-1], wpt, self.max_jump_km
+                )
                 if not v.ok:
                     n = len(waypoints) + 1
                     state = f"NORMAL, waypoint {n} dropped ({v.reason})"
