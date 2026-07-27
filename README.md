@@ -37,6 +37,10 @@ glider arrives, validate the waypoint against a geofence, and send it
   around `sfmc-follow` that fills in `--hostname`, `--notify-email`,
   and `--notify-from` from the glider's own config (see Deploy on the
   VM, below), keeping them out of the shared systemd unit.
+- `src/autopilot/web.py` — `autopilot-web`, the LAN-only dashboard:
+  per-glider status, prediction freshness, latest plot, log tail;
+  optional passkey-gated on/off + target controls (see Web
+  dashboard, below).
 
 ## Simulate
 
@@ -268,6 +272,50 @@ A config edit to a `HOT_KEYS` field (`waypoint_lead_h`,
 `max_waypoint_jump_km`, etc., when `config_file:` is set in the YAML)
 does **not** need a restart — it's picked up at the next surfacing.
 
+### Web dashboard
+
+`autopilot-web` serves a LAN-only status page over the same files and
+units: per glider, the service state, last piloting outcome
+(TRACKING/FALLBACK from the log), which prediction file is in force
+and its age, the full config, the latest surfacing plot, and a log
+tail. It discovers gliders from `<name>_config.yaml` in its
+`--base-dir` — no configuration of its own.
+
+There are no user accounts. With no passkey configured the dashboard
+is strictly read-only. To enable the two controls — autopilot on/off
+(`systemctl enable/disable --now autopilot@<glider>`) and tracking
+target (rewrites `predictions_dir` in the glider's YAML, offering
+`predictions/` and its subdirectories) — set a shared passkey; it
+must be typed into every change, and every attempt (allowed or
+denied) is appended to `/srv/autopilot/audit.log` with timestamp and
+client address.
+
+Setup:
+
+```sh
+# 1. The service (read-only until step 2 and 3):
+sudo cp /opt/autopilot/deploy/autopilot-web.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now autopilot-web
+# now at http://gliderpilot.ceoas.oregonstate.edu:8080 (LAN only —
+# keep the port firewalled from off-campus)
+
+# 2. The shared passkey (enables the controls):
+echo 'AUTOPILOT_WEB_PASSKEY=choose-a-long-phrase' | sudo tee /etc/autopilot/web.env
+sudo chmod 600 /etc/autopilot/web.env
+sudo systemctl restart autopilot-web
+
+# 3. Let the dashboard user toggle glider units (and nothing else):
+visudo -cf /opt/autopilot/deploy/sudoers-autopilot-web   # syntax check first!
+sudo install -m 0440 /opt/autopilot/deploy/sudoers-autopilot-web \
+    /etc/sudoers.d/autopilot-web
+```
+
+Target changes apply at the next surfacing when the glider's config
+has `config_file:` set (live reload); otherwise the page reminds you
+a restart is needed. Turning a glider on/off uses
+`enable/disable --now`, so the choice also survives VM reboots.
+
 ### Updating the code
 
 `/opt/autopilot` is an ordinary git checkout:
@@ -283,6 +331,7 @@ uv lock --upgrade-package sfmc-api && uv sync  # only if sfmc-api itself
 for u in $(systemctl list-units 'autopilot@*' --plain --no-legend | cut -d' ' -f1); do
     sudo systemctl restart "$u"                # every enabled glider instance
 done
+sudo systemctl restart autopilot-web           # if the dashboard is installed
 ```
 
 `/srv/autopilot` is untouched by any of this — configs, predictions,

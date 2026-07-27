@@ -448,9 +448,7 @@ class PredictedTrackFollower(BaseFollower):
             action = "It was sent to the safe point."
             holding = "is still holding at the safe point"
         else:
-            action = (
-                "No new goto was sent. Check num_legs_to_run behavior."
-            )
+            action = "No new goto was sent. Check num_legs_to_run behavior."
             holding = "is still looping its last commanded waypoint"
         if not self._in_fallback:
             summary = f"autopilot FALLBACK ({verdict.reason})"

@@ -1,0 +1,20 @@
+[Unit]
+Description=Glider autopilot web dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=autopilot
+Group=glider_pilots
+UMask=0002
+WorkingDirectory=/srv/autopilot
+# Contains AUTOPILOT_WEB_PASSKEY=...; omit the file (or the variable)
+# to run the dashboard strictly read-only.
+EnvironmentFile=-/etc/autopilot/web.env
+ExecStart=/opt/autopilot/.venv/bin/autopilot-web --host 0.0.0.0 --port 8080 \
+    --base-dir /srv/autopilot
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

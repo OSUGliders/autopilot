@@ -1,0 +1,8 @@
+# Allow the web dashboard (running as 'autopilot') to toggle glider
+# units — and nothing else.  The app validates glider names against
+# [A-Za-z0-9_-]+ before building the command.
+#
+# Install (the visudo check first — a bad sudoers file locks out sudo):
+#   visudo -cf deploy/sudoers-autopilot-web
+#   sudo install -m 0440 deploy/sudoers-autopilot-web /etc/sudoers.d/autopilot-web
+autopilot ALL=(root) NOPASSWD: /usr/bin/systemctl enable --now autopilot@*, /usr/bin/systemctl disable --now autopilot@*
