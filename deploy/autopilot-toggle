@@ -1,0 +1,34 @@
+#!/bin/sh
+# Toggle a glider autopilot unit on or off.
+#
+# Installed root-owned at /usr/local/sbin/autopilot-toggle and invoked
+# via sudo by the web dashboard (the 'autopilot' user).  Modern sudo
+# forbids wildcards in sudoers command arguments, so the argument
+# validation lives here, in a root-owned file, and the sudoers entry
+# is an exact command path with no arguments spelled out.
+#
+# Usage: autopilot-toggle on|off GLIDER
+set -eu
+
+action="${1:?usage: autopilot-toggle on|off GLIDER}"
+glider="${2:?usage: autopilot-toggle on|off GLIDER}"
+
+case "$glider" in
+*[!A-Za-z0-9_-]* | "")
+    echo "invalid glider name: $glider" >&2
+    exit 2
+    ;;
+esac
+if [ ! -f "/srv/autopilot/${glider}_config.yaml" ]; then
+    echo "unknown glider: no /srv/autopilot/${glider}_config.yaml" >&2
+    exit 2
+fi
+
+case "$action" in
+on) exec systemctl enable --now "autopilot@${glider}" ;;
+off) exec systemctl disable --now "autopilot@${glider}" ;;
+*)
+    echo "invalid action: $action" >&2
+    exit 2
+    ;;
+esac

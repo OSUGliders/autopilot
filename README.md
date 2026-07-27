@@ -305,7 +305,11 @@ echo 'AUTOPILOT_WEB_PASSKEY=choose-a-long-phrase' | sudo tee /etc/autopilot/web.
 sudo chmod 600 /etc/autopilot/web.env
 sudo systemctl restart autopilot-web
 
-# 3. Let the dashboard user toggle glider units (and nothing else):
+# 3. Let the dashboard user toggle glider units (and nothing else).
+#    Modern sudo forbids wildcards in command arguments, so the rule
+#    allows exactly one root-owned helper, which validates the glider
+#    name and action itself:
+sudo install -m 0755 -o root /opt/autopilot/deploy/autopilot-toggle /usr/local/sbin/
 visudo -cf /opt/autopilot/deploy/sudoers-autopilot-web   # syntax check first!
 sudo install -m 0440 /opt/autopilot/deploy/sudoers-autopilot-web \
     /etc/sudoers.d/autopilot-web

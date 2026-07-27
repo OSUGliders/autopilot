@@ -97,14 +97,14 @@ def test_wrong_passkey_denied_and_audited(base, client, monkeypatch):
         web, "time", __import__("types").SimpleNamespace(sleep=lambda s: None)
     )
     calls = []
-    monkeypatch.setattr(web, "_sudo_systemctl", lambda *a: calls.append(a))
+    monkeypatch.setattr(web, "_sudo_toggle", lambda *a: calls.append(a))
 
     r = client.post(
         "/glider/osusim/service", data={"action": "off", "passkey": "wrong"}
     )
 
     assert r.status_code == 302 and "wrong+passkey" in r.headers["Location"]
-    assert not calls, "systemctl must not run on a bad passkey"
+    assert not calls, "the toggle helper must not run on a bad passkey"
     assert "DENIED OFF osusim" in (base / "audit.log").read_text()
 
 
@@ -112,18 +112,18 @@ def test_correct_passkey_toggles_service(base, client, monkeypatch):
     monkeypatch.setenv("AUTOPILOT_WEB_PASSKEY", "sekrit")
     calls = []
 
-    def fake_sudo(*args):
+    def fake_toggle(*args):
         calls.append(args)
         return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(web, "_sudo_systemctl", fake_sudo)
+    monkeypatch.setattr(web, "_sudo_toggle", fake_toggle)
 
     r = client.post(
         "/glider/osusim/service", data={"action": "on", "passkey": "sekrit"}
     )
 
     assert r.status_code == 302
-    assert calls == [("enable", "--now", "autopilot@osusim")]
+    assert calls == [("on", "osusim")]
     assert "ON osusim ok" in (base / "audit.log").read_text()
 
 

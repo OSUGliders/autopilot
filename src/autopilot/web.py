@@ -7,7 +7,8 @@ already uses (``/srv/autopilot`` conventions; see the README).
 
 Controls are opt-in: when the ``AUTOPILOT_WEB_PASSKEY`` environment
 variable is set, each glider page gains an on/off toggle
-(``systemctl enable/disable --now autopilot@<glider>`` via sudo) and a
+(``systemctl enable/disable --now autopilot@<glider>``, via the
+sudo-permitted root helper ``autopilot-toggle``) and a
 tracking-target selector (rewrites ``predictions_dir`` in the glider's
 config, preserving comments).  There are no user accounts or sessions:
 every change requires typing the shared passkey into that form, and
@@ -51,10 +52,19 @@ def _systemctl(*args: str) -> subprocess.CompletedProcess:
     )
 
 
-def _sudo_systemctl(*args: str) -> subprocess.CompletedProcess:
+#: Root-owned helper (deploy/autopilot-toggle) that validates its
+#: arguments itself: modern sudo forbids wildcards in sudoers command
+#: arguments, so the sudoers rule allows exactly this path, bare.
+TOGGLE_HELPER = "/usr/local/sbin/autopilot-toggle"
+
+
+def _sudo_toggle(action: str, glider: str) -> subprocess.CompletedProcess:
     # -n: never prompt; fails loudly if the sudoers rule is missing.
     return subprocess.run(
-        ["sudo", "-n", "systemctl", *args], capture_output=True, text=True, timeout=30
+        ["sudo", "-n", TOGGLE_HELPER, action, glider],
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
 
 
@@ -383,8 +393,7 @@ def create_app(base_dir: str | Path) -> Flask:
         if action not in ("on", "off"):
             abort(400)
         _gate(name, action.upper())
-        cmd = ("enable", "--now") if action == "on" else ("disable", "--now")
-        result = _sudo_systemctl(*cmd, f"autopilot@{name}")
+        result = _sudo_toggle(action, name)
         ok = result.returncode == 0
         audit(
             base,
@@ -394,7 +403,7 @@ def create_app(base_dir: str | Path) -> Flask:
         msg = (
             f"autopilot turned {action}"
             if ok
-            else f"systemctl failed: {result.stderr.strip() or result.returncode}"
+            else f"toggle failed: {result.stderr.strip() or result.returncode}"
         )
         return redirect(url_for("glider_page", name=name, msg=msg))
 
