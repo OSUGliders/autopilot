@@ -1,0 +1,19 @@
+[Unit]
+Description=Pull glider drifter predictions from the remote generator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=autopilot
+Group=glider_pilots
+UMask=0002
+# Edit REMOTE_HOST and the remote path for your site.  No --delete:
+# stale prediction files are harmless (the follower always picks the
+# newest file timestamped at or before "now"), while a transient
+# failure or briefly-empty remote listing must never delete
+# predictions a glider currently depends on.
+ExecStart=/usr/bin/rsync -az --timeout=60 \
+    -e "ssh -i /etc/autopilot/rsync_id_ed25519 -o StrictHostKeyChecking=yes -o BatchMode=yes" \
+    predictions@REMOTE_HOST:/path/to/predictions/ /srv/autopilot/predictions/
+TimeoutStartSec=90
