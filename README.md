@@ -41,6 +41,9 @@ glider arrives, validate the waypoint against a geofence, and send it
   per-glider status, prediction freshness, latest plot, log tail;
   optional passkey-gated on/off + target controls (see Web
   dashboard, below).
+- `src/autopilot/ingest.py` — `autopilot-ingest-predictions`, converts
+  the real-time localization feed into prediction files (see
+  Real-time predictions, below).
 
 ## Simulate
 
@@ -99,6 +102,43 @@ uv run autopilot-live-drifter Floats/MIT_RIOT_Traj_...mat --glider osusim \
 Then run the follower as usual (below). Don't re-run the generator
 mid-test: it re-anchors the track to the latest fix, teleporting the
 drifter.
+
+## Real-time predictions
+
+`autopilot-ingest-predictions` converts the real-time localization
+feed — one wide `<deployment>_float_tracks_latest.csv` per deployment
+(e.g. `A1_...`, then `B1_...` for the next), with `estimate`
+(observed) and `prediction` (forecast) rows across several parallel
+tracking methods (`ekf`, `pf`, `pf_lag2h`, `batch`, `ops`) — into the
+follower's plain `drifter_*.csv` format:
+
+```sh
+uv run autopilot-ingest-predictions --localization-dir localization --predictions-dir predictions
+```
+
+Every `(deployment, float, tracker)` combination gets its own
+directory — `predictions/<deployment>_<float>_<tracker>/` — so a pilot
+picks both the platform and the tracking method via the web
+dashboard's target selector, with no changes there. Only the latest
+`segment` per `(float, tracker)` is used (a segment restart means a
+real position gap, never interpolated across), and the same physical
+float redeployed under a new deployment id gets its own directory
+rather than colliding with the old one.
+
+**The output filename is anchored on the data, not on when this ran**:
+it's the latest `estimate` row's own timestamp, not ingest wall-clock
+time. Stamping with wall-clock time would silently defeat the
+follower's staleness check — a feed that stopped updating would still
+produce a "fresh"-looking file every cycle, and FALLBACK would never
+fire. A `(float, tracker)` with no estimate rows (prediction-only) or
+a deployment file that fails to parse is simply skipped that cycle —
+previously written predictions are never touched, so the follower
+degrades to flying on the last good file exactly as it already does
+for any other stale-prediction case.
+
+In production this runs as the second `ExecStart=` line in
+`deploy/autopilot-rsync-predictions.service`, right after the rsync
+pull (see Deploy on the VM, below).
 
 ## Run live
 

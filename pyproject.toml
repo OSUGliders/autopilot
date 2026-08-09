@@ -21,6 +21,7 @@ autopilot-mock-data = "autopilot.sim.mock_data:main"
 autopilot-live-drifter = "autopilot.sim.live_drifter:main"
 autopilot-follow = "autopilot.launch:main"
 autopilot-web = "autopilot.web:main"
+autopilot-ingest-predictions = "autopilot.ingest:main"
 
 [dependency-groups]
 dev = [

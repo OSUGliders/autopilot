@@ -13,7 +13,14 @@ UMask=0002
 # newest file timestamped at or before "now"), while a transient
 # failure or briefly-empty remote listing must never delete
 # predictions a glider currently depends on.
+#
+# Step 1: mirror the raw <deployment>_float_tracks_latest.csv feed.
 ExecStart=/usr/bin/rsync -az --timeout=60 \
     -e "ssh -i /etc/autopilot/rsync_id_ed25519 -o UserKnownHostsFile=/etc/autopilot/known_hosts -o StrictHostKeyChecking=yes -o BatchMode=yes" \
-    predictions@REMOTE_HOST:/path/to/predictions/ /srv/autopilot/predictions/
-TimeoutStartSec=90
+    predictions@REMOTE_HOST:/path/to/localization/ /srv/autopilot/localization/
+# Step 2: convert into per (deployment, float, tracker) prediction
+# files under predictions/ — see src/autopilot/ingest.py.
+ExecStart=/opt/autopilot/.venv/bin/autopilot-ingest-predictions \
+    --localization-dir /srv/autopilot/localization \
+    --predictions-dir /srv/autopilot/predictions
+TimeoutStartSec=120
