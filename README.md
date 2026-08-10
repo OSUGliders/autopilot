@@ -136,6 +136,13 @@ previously written predictions are never touched, so the follower
 degrades to flying on the last good file exactly as it already does
 for any other stale-prediction case.
 
+It also renders one **comparison plot per asset** — every tracker
+overlaid, solid for observed and dashed for forecast — and copies it
+as `tracks.png` into all of that asset's tracker directories, so the
+web dashboard shows it under "Compare tracking methods" on a glider's
+page for whichever target is currently selected, no matter which
+tracker. A plotting failure never blocks the CSV writes.
+
 In production this runs as the second `ExecStart=` line in
 `deploy/autopilot-rsync-predictions.service`, right after the rsync
 pull (see Deploy on the VM, below).

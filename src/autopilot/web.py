@@ -136,6 +136,13 @@ def latest_plot(base: Path, config: dict, glider: str) -> Path | None:
     return plots[-1] if plots else None
 
 
+def tracks_plot(base: Path, config: dict) -> Path | None:
+    """Comparison plot (all tracking methods) for the asset behind the
+    current target, if autopilot-ingest-predictions produced one."""
+    path = base / str(config.get("predictions_dir", "predictions")) / "tracks.png"
+    return path if path.is_file() else None
+
+
 def tail_log(base: Path, glider: str, lines: int = LOG_TAIL_LINES) -> str:
     path = base / "logs" / f"{glider}.log"
     try:
@@ -212,7 +219,7 @@ th { border-bottom: 1px solid #999; }
 .muted { color: #777; font-size: 0.9em; }
 img.plot { max-width: 100%; border: 1px solid #ccc; }
 pre { background: #f6f6f6; padding: 0.7em; overflow-x: auto; font-size: 0.8em; }
-form.inline { display: inline-block; margin-right: 2em; }
+form.control { margin-bottom: 0.8em; }
 input[type=password] { width: 8em; }
 .msg { background: #fffbe6; border: 1px solid #e6d87a; padding: 0.5em 1em; }
 """
@@ -252,13 +259,13 @@ GLIDER_HTML = """<!doctype html>
 
 {% if controls %}
 <h2>Controls</h2>
-<form class="inline" method="post"
+<form class="control" method="post"
       action="{{ url_for('service_action', name=name) }}">
   <input type="hidden" name="action" value="{{ 'off' if active == 'active' else 'on' }}">
   <button>Turn autopilot {{ 'OFF' if active == 'active' else 'ON' }}</button>
   passkey <input type="password" name="passkey" required>
 </form>
-<form class="inline" method="post"
+<form class="control" method="post"
       action="{{ url_for('target_action', name=name) }}">
   target <select name="predictions_dir">
   {% for opt in targets %}
@@ -279,6 +286,11 @@ YAML to enable live reload).' }}</p>
   In force: {{ pred.current }} ({{ '%.1f' % pred.age_h }} h old{{ ', STALE' if pred.stale }})
 {% else %}No usable prediction file{% endif %}
 — {{ pred.count }} file(s) in {{ pred.dir }}, {{ pred.future }} future-dated.</p>
+
+{% if tracks_plot_mtime %}
+<h3>Compare tracking methods</h3>
+<img class="plot" src="{{ url_for('tracks_image', name=name) }}?t={{ tracks_plot_mtime }}">
+{% endif %}
 
 <h2>Config ({{ name }}_config.yaml)</h2>
 <table>
@@ -355,6 +367,7 @@ def create_app(base_dir: str | Path) -> Flask:
         pred = prediction_status(base, config, datetime.now(UTC))
         pred["dir_rel"] = str(config.get("predictions_dir", ""))
         plot = latest_plot(base, config, name)
+        tplot = tracks_plot(base, config)
         log_text = tail_log(base, name)
         config_rows = (
             [("(config unreadable)", config_error)]
@@ -375,6 +388,7 @@ def create_app(base_dir: str | Path) -> Flask:
             pred=pred,
             config_rows=config_rows,
             plot_mtime=int(plot.stat().st_mtime) if plot else None,
+            tracks_plot_mtime=int(tplot.stat().st_mtime) if tplot else None,
             log_tail=log_text,
         )
 
@@ -382,6 +396,14 @@ def create_app(base_dir: str | Path) -> Flask:
     def plot_image(name):
         _known(name)
         plot = latest_plot(base, load_config(base, name), name)
+        if plot is None:
+            abort(404)
+        return send_file(plot, max_age=0)
+
+    @app.get("/glider/<name>/tracks.png")
+    def tracks_image(name):
+        _known(name)
+        plot = tracks_plot(base, load_config(base, name))
         if plot is None:
             abort(404)
         return send_file(plot, max_age=0)

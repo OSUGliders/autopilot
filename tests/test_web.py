@@ -57,6 +57,25 @@ def test_unknown_glider_404(client):
     assert client.get("/glider/../etc").status_code == 404
 
 
+def test_tracks_plot_absent_by_default(base, client):
+    assert web.tracks_plot(base, web.load_config(base, "osusim")) is None
+    assert client.get("/glider/osusim/tracks.png").status_code == 404
+    assert "Compare tracking methods" not in client.get("/glider/osusim").get_data(
+        as_text=True
+    )
+
+
+def test_tracks_plot_shown_when_ingest_produced_one(base, client):
+    (base / "predictions" / "tracks.png").write_bytes(b"not a real png, just bytes")
+
+    assert web.tracks_plot(base, web.load_config(base, "osusim")) is not None
+    r = client.get("/glider/osusim/tracks.png")
+    assert r.status_code == 200 and r.data == b"not a real png, just bytes"
+    assert "Compare tracking methods" in client.get("/glider/osusim").get_data(
+        as_text=True
+    )
+
+
 def test_prediction_status_ages(base):
     config = web.load_config(base, "osusim")
     status = web.prediction_status(base, config, NOW)

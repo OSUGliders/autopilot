@@ -115,6 +115,30 @@ def test_ingest_writes_one_file_per_deployment_float_tracker(tmp_path):
     assert (predictions / "A1_mlf95_ekf" / "drifter_20260806T1100.csv").exists()
 
 
+def test_ingest_writes_comparison_plot_into_every_tracker_dir(tmp_path):
+    """One tracks.png per asset, duplicated into each of its tracker
+    directories so the web app can show it for whichever target is
+    currently selected without any new lookup."""
+    loc = tmp_path / "localization"
+    loc.mkdir()
+    shutil.copy(FIXTURE, loc / "A1_float_tracks_latest.csv")
+    predictions = tmp_path / "predictions"
+
+    ingest(loc, predictions)
+
+    plots = [
+        (predictions / f"A1_em10962_{tracker}" / "tracks.png")
+        for tracker in ("ekf", "ops", "pf")
+    ]
+    assert all(p.is_file() and p.stat().st_size > 0 for p in plots)
+    # Identical content copied to each, not independently (re)rendered.
+    assert plots[0].read_bytes() == plots[1].read_bytes() == plots[2].read_bytes()
+    # mlf95 is a different asset -> a different plot, not em10962's.
+    mlf95_plot = predictions / "A1_mlf95_ekf" / "tracks.png"
+    assert mlf95_plot.is_file()
+    assert mlf95_plot.read_bytes() != plots[0].read_bytes()
+
+
 def test_ingest_disambiguates_same_float_across_deployments(tmp_path):
     """The same physical float redeployed under a new deployment id
     must not collide with (or overwrite) the earlier deployment's

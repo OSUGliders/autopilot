@@ -33,6 +33,14 @@ the follower already turns a stale predictions_dir into FALLBACK plus
 a pilot email on its own, so a bad or missing upstream update degrades
 safely rather than needing special-casing here.
 
+Also writes one comparison plot per (deployment, float) asset —
+every tracker overlaid — as ``tracks.png`` inside each of that asset's
+tracker directories.  Duplicating the same image into every tracker
+directory (rather than inventing a separate per-asset URL/lookup) means
+the web dashboard can show it for whichever target is currently
+selected with zero new path parsing: it already has ``predictions_dir``
+in hand.  A plotting failure never blocks the CSV writes.
+
 Run with: autopilot-ingest-predictions --localization-dir DIR --predictions-dir DIR
 """
 
@@ -43,9 +51,15 @@ import csv
 import logging
 import math
 import re
+import shutil
 from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
+
+import matplotlib
+
+matplotlib.use("Agg")  # runs headless (systemd timer / CLI)
+import matplotlib.pyplot as plt
 
 logger = logging.getLogger("autopilot.ingest")
 
@@ -192,6 +206,60 @@ def write_track(
     return path
 
 
+def _plot_comparison(
+    deployment: str,
+    float_id: str,
+    by_tracker: dict[str, list[tuple[datetime, float, float, str]]],
+):
+    """One figure overlaying every tracker's track: solid = observed,
+    dashed = forecast, one legend entry per tracker (color-matched)."""
+    fig, ax = plt.subplots(figsize=(7, 7))
+    lats = []
+    for tracker in sorted(by_tracker):
+        rows = by_tracker[tracker]
+        obs = [(lon, lat) for _, lat, lon, kind in rows if kind == "estimate"]
+        pred = [(lon, lat) for _, lat, lon, kind in rows if kind == "prediction"]
+        lats += [lat for _, lat, _, _ in rows]
+        color = None
+        if obs:
+            (line,) = ax.plot(*zip(*obs), "-", marker=".", ms=3, label=tracker)
+            color = line.get_color()
+        if pred:
+            label = None if obs else f"{tracker} (forecast only)"
+            ax.plot(*zip(*pred), "--", color=color, marker=".", ms=3, label=label)
+    if lats:
+        ax.set_aspect(1 / math.cos(math.radians(sum(lats) / len(lats))))
+    ax.set_xlabel("Longitude")
+    ax.set_ylabel("Latitude")
+    ax.set_title(f"{deployment} / {float_id}  —  solid: observed, dashed: forecast")
+    ax.legend(loc="best", fontsize=8)
+    ax.grid(alpha=0.3)
+    return fig
+
+
+def write_comparison_plot(
+    deployment: str,
+    float_id: str,
+    by_tracker: dict[str, list[tuple[datetime, float, float, str]]],
+    dest_dirs: list[Path],
+) -> None:
+    """Render once, copy into every already-written tracker directory
+    for this asset.  Best-effort: a plotting bug must never block the
+    CSV writes that already succeeded this cycle.
+    """
+    if not dest_dirs:
+        return
+    try:
+        fig = _plot_comparison(deployment, float_id, by_tracker)
+        first = dest_dirs[0] / "tracks.png"
+        fig.savefig(first, dpi=110, bbox_inches="tight")
+        plt.close(fig)
+        for d in dest_dirs[1:]:
+            shutil.copy(first, d / "tracks.png")
+    except Exception:
+        logger.exception("Comparison plot failed for %s/%s", deployment, float_id)
+
+
 def ingest(localization_dir: Path, predictions_dir: Path) -> int:
     """Convert every deployment file's tracks into prediction files.
 
@@ -199,9 +267,22 @@ def ingest(localization_dir: Path, predictions_dir: Path) -> int:
     """
     written = 0
     for path in deployment_files(localization_dir):
-        for (deployment, float_id, tracker), rows in read_tracks(path).items():
-            if write_track(predictions_dir, deployment, float_id, tracker, rows):
+        tracks = read_tracks(path)
+        by_asset: dict[tuple[str, str], dict[str, list]] = defaultdict(dict)
+        written_dirs: dict[tuple[str, str], list[Path]] = defaultdict(list)
+        for (deployment, float_id, tracker), rows in tracks.items():
+            by_asset[(deployment, float_id)][tracker] = rows
+            out = write_track(predictions_dir, deployment, float_id, tracker, rows)
+            if out:
                 written += 1
+                written_dirs[(deployment, float_id)].append(out.parent)
+        for (deployment, float_id), by_tracker in by_asset.items():
+            write_comparison_plot(
+                deployment,
+                float_id,
+                by_tracker,
+                written_dirs.get((deployment, float_id), []),
+            )
     return written
 
 
