@@ -212,8 +212,14 @@ def _plot_comparison(
     by_tracker: dict[str, list[tuple[datetime, float, float, str]]],
 ):
     """One figure overlaying every tracker's track: solid = observed,
-    dashed = forecast, one legend entry per tracker (color-matched)."""
-    fig, ax = plt.subplots(figsize=(7, 7))
+    dashed = forecast, one legend entry per tracker (color-matched).
+
+    Each tracker's most recent estimate — the one position actually
+    worth trusting right now — is drawn as a large, outlined dot;
+    earlier estimates are small so the eye goes straight to what's
+    current instead of hunting along the line for the last point.
+    """
+    fig, ax = plt.subplots(figsize=(10, 10))
     lats = []
     for tracker in sorted(by_tracker):
         rows = by_tracker[tracker]
@@ -222,17 +228,30 @@ def _plot_comparison(
         lats += [lat for _, lat, _, _ in rows]
         color = None
         if obs:
-            (line,) = ax.plot(*zip(*obs), "-", marker=".", ms=3, label=tracker)
+            (line,) = ax.plot(*zip(*obs), "-", lw=1.3, label=tracker)
             color = line.get_color()
+            if len(obs) > 1:
+                xs, ys = zip(*obs[:-1])
+                ax.scatter(xs, ys, s=14, color=color, zorder=3)
+            ax.scatter(
+                *obs[-1], s=160, color=color, edgecolor="black", linewidth=0.9, zorder=5
+            )
         if pred:
             label = None if obs else f"{tracker} (forecast only)"
-            ax.plot(*zip(*pred), "--", color=color, marker=".", ms=3, label=label)
+            ax.plot(
+                *zip(*pred), "--", lw=1.3, color=color, marker="o", ms=5, label=label
+            )
     if lats:
         ax.set_aspect(1 / math.cos(math.radians(sum(lats) / len(lats))))
-    ax.set_xlabel("Longitude")
-    ax.set_ylabel("Latitude")
-    ax.set_title(f"{deployment} / {float_id}  —  solid: observed, dashed: forecast")
-    ax.legend(loc="best", fontsize=8)
+    ax.set_xlabel("Longitude", fontsize=12)
+    ax.set_ylabel("Latitude", fontsize=12)
+    ax.set_title(
+        f"{deployment} / {float_id}\n"
+        "solid = observed (large dot = most recent)   dashed = forecast",
+        fontsize=14,
+    )
+    ax.legend(loc="best", fontsize=10)
+    ax.tick_params(labelsize=10)
     ax.grid(alpha=0.3)
     return fig
 
@@ -252,7 +271,7 @@ def write_comparison_plot(
     try:
         fig = _plot_comparison(deployment, float_id, by_tracker)
         first = dest_dirs[0] / "tracks.png"
-        fig.savefig(first, dpi=110, bbox_inches="tight")
+        fig.savefig(first, dpi=130, bbox_inches="tight")
         plt.close(fig)
         for d in dest_dirs[1:]:
             shutil.copy(first, d / "tracks.png")
