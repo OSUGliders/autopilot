@@ -82,26 +82,26 @@ DEPLOYMENT_FILE_RE = re.compile(
 )
 _SAFE = re.compile(r"[^A-Za-z0-9_]+")
 
-# Matches matplotlib's tab10 cycle in sorted-tracker order, so a
-# tracker is the same color in the KMZ as in the comparison PNG.
-_TRACKER_PALETTE = {
-    "batch": (31, 119, 180),
-    "ekf": (255, 127, 14),
-    "ops": (44, 160, 44),
-    "pf": (214, 39, 40),
-    "pf_lag2h": (148, 103, 189),
-}
-_FALLBACK_COLORS = [(140, 86, 75), (227, 119, 194), (127, 127, 127)]
 
-
-def _tracker_rgb(tracker: str, fallback_seen: dict[str, tuple[int, int, int]]):
-    if tracker in _TRACKER_PALETTE:
-        return _TRACKER_PALETTE[tracker]
-    if tracker not in fallback_seen:
-        fallback_seen[tracker] = _FALLBACK_COLORS[
-            len(fallback_seen) % len(_FALLBACK_COLORS)
-        ]
-    return fallback_seen[tracker]
+def _drifter_colors(
+    float_ids, cmap_name: str = "autumn"
+) -> dict[str, tuple[int, int, int]]:
+    """One RGB color per drifter (float id), evenly sampled from a
+    matplotlib colormap -- so every tracker for a given drifter draws
+    in the same color, and different drifters are visually distinct.
+    Sampled fresh from whichever floats are present this cycle (this
+    module keeps no state between cycles), so a color can shift
+    slightly if the fleet roster changes -- accepted for simplicity.
+    """
+    cmap = matplotlib.colormaps[cmap_name]
+    ordered = sorted(float_ids)
+    n = len(ordered)
+    colors = {}
+    for i, float_id in enumerate(ordered):
+        frac = 0.5 if n <= 1 else i / (n - 1)
+        r, g, b, _a = cmap(frac)
+        colors[float_id] = (round(r * 255), round(g * 255), round(b * 255))
+    return colors
 
 
 def _slug(*parts: str) -> str:
@@ -314,60 +314,118 @@ def write_comparison_plot(
         logger.exception("Comparison plot failed for %s/%s", deployment, float_id)
 
 
+# A small circle, not Earth's default oversized pushpin.
+_CIRCLE_ICON = "http://maps.google.com/mapfiles/kml/shapes/placemark_circle.png"
+
+# Trackers shown in the KMZ by default: the fleet's every-tracker
+# comparison PNG stays as-is (all methods -- picking a tracker to fly
+# on is a real decision), but that many overlapping lines is too
+# cluttered for a fleet-wide Google Earth view. Override with
+# --kml-trackers.
+DEFAULT_KML_TRACKERS = ("ekf", "ops", "pf_lag2h")
+
+
+def _style_track(
+    track, rgb: tuple[int, int, int], width: float, alpha: int, icon_scale: float
+) -> None:
+    """Thin line + small circle icon (shown as the gx:Track scrubs)."""
+    track.stylemap.normalstyle.linestyle.color = simplekml.Color.rgb(*rgb, alpha)
+    track.stylemap.normalstyle.linestyle.width = width
+    track.stylemap.normalstyle.iconstyle.icon.href = _CIRCLE_ICON
+    track.stylemap.normalstyle.iconstyle.scale = icon_scale
+    track.stylemap.normalstyle.iconstyle.color = simplekml.Color.rgb(*rgb, alpha)
+
+
 def build_kmz(
     all_tracks: dict[tuple[str, str, str], list[tuple[datetime, float, float, str]]],
+    trackers: tuple[str, ...] | None = DEFAULT_KML_TRACKERS,
+    cmap_name: str = "autumn",
 ) -> simplekml.Kml:
     """One KML Document, Folder per deployment > float > tracker.
 
-    Same visual language as :func:`_plot_comparison`: solid line for
-    observed, lighter/thinner dashed-style line for forecast, and a
-    bigger marker at the most recent estimate.  KML has no true dashed
-    line style, so forecast segments are distinguished by reduced
-    opacity instead.
+    Colored by *drifter* (float id), not tracker: every tracking
+    method for a given drifter shares one color (sampled from
+    *cmap_name*), so what stands out on a fleet-wide map is which
+    physical drifter a track belongs to, not which algorithm produced
+    it — the comparison PNG is where method-vs-method matters, and
+    that's still colored per tracker there.  A drifter reused across
+    deployments keeps the same color (colored by float id alone, not
+    (deployment, float)).
+
+    Each track is a ``gx:Track`` — a chronological when/coord sequence,
+    not a plain LineString — so Google Earth's time slider can scrub
+    through it; a plain LineString carries no per-point time
+    information at all.  gx:Track is also far more compact than one
+    Placemark per row, which matters here: some tracks run to 1000+
+    rows.  Full opacity for observed, lighter for forecast (KML has no
+    true dashed line style), and a bigger marker at the most recent
+    estimate.
+
+    *trackers* restricts which tracking methods appear at all (default
+    :data:`DEFAULT_KML_TRACKERS`) — with every method included, the
+    overlapping lines make a fleet-wide view unreadable.  ``None``
+    means no filtering (every tracker present in the data).  This has
+    no effect on the CSV predictions or the comparison PNG, which
+    still cover every tracker — this only trims what Earth draws.
     """
     kml = simplekml.Kml()
-    fallback_seen: dict[str, tuple[int, int, int]] = {}
+    allowed = set(trackers) if trackers is not None else None
 
     by_deployment: dict[str, dict[str, dict[str, list]]] = defaultdict(
         lambda: defaultdict(dict)
     )
     for (deployment, float_id, tracker), rows in all_tracks.items():
+        if allowed is not None and tracker not in allowed:
+            continue
         by_deployment[deployment][float_id][tracker] = rows
+
+    drifter_colors = _drifter_colors(
+        {float_id for floats in by_deployment.values() for float_id in floats},
+        cmap_name,
+    )
 
     for deployment in sorted(by_deployment):
         dep_folder = kml.newfolder(name=deployment)
         for float_id in sorted(by_deployment[deployment]):
             float_folder = dep_folder.newfolder(name=float_id)
+            rgb = drifter_colors[float_id]
             for tracker in sorted(by_deployment[deployment][float_id]):
                 rows = by_deployment[deployment][float_id][tracker]
                 obs = [
-                    (lon, lat, t) for t, lat, lon, kind in rows if kind == "estimate"
+                    (t, lat, lon) for t, lat, lon, kind in rows if kind == "estimate"
                 ]
                 pred = [
-                    (lon, lat) for _, lat, lon, kind in rows if kind == "prediction"
+                    (t, lat, lon) for t, lat, lon, kind in rows if kind == "prediction"
                 ]
-                rgb = _tracker_rgb(tracker, fallback_seen)
                 tracker_folder = float_folder.newfolder(name=tracker)
                 if obs:
-                    ls = tracker_folder.newlinestring(
-                        name=f"{tracker} observed",
-                        coords=[(lon, lat) for lon, lat, _ in obs],
+                    trk = tracker_folder.newgxtrack(name=f"{tracker} observed")
+                    trk.newwhen(
+                        [
+                            t.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+                            for t, _, _ in obs
+                        ]
                     )
-                    ls.style.linestyle.color = simplekml.Color.rgb(*rgb)
-                    ls.style.linestyle.width = 3
+                    trk.newgxcoord([(lon, lat) for _, lat, lon in obs])
+                    _style_track(trk, rgb, width=1.2, alpha=255, icon_scale=0.5)
                 if pred:
                     label = "forecast" if obs else "forecast only"
-                    ls = tracker_folder.newlinestring(
-                        name=f"{tracker} {label}", coords=pred
+                    trk = tracker_folder.newgxtrack(name=f"{tracker} {label}")
+                    trk.newwhen(
+                        [
+                            t.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+                            for t, _, _ in pred
+                        ]
                     )
-                    ls.style.linestyle.color = simplekml.Color.rgb(*rgb, 140)
-                    ls.style.linestyle.width = 2
+                    trk.newgxcoord([(lon, lat) for _, lat, lon in pred])
+                    _style_track(trk, rgb, width=1.0, alpha=140, icon_scale=0.5)
                 if obs:
-                    last_lon, last_lat, last_t = max(obs, key=lambda o: o[2])
+                    last_t, last_lat, last_lon = max(obs, key=lambda o: o[0])
                     pnt = tracker_folder.newpoint(
                         name=f"{tracker} (most recent)", coords=[(last_lon, last_lat)]
                     )
-                    pnt.style.iconstyle.scale = 1.4
+                    pnt.style.iconstyle.icon.href = _CIRCLE_ICON
+                    pnt.style.iconstyle.scale = 0.9
                     pnt.style.iconstyle.color = simplekml.Color.rgb(*rgb)
                     last_utc = last_t.astimezone(UTC)
                     pnt.timestamp.when = last_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -375,14 +433,18 @@ def build_kmz(
     return kml
 
 
-def write_kmz(all_tracks: dict, kml_dir: Path) -> Path | None:
+def write_kmz(
+    all_tracks: dict,
+    kml_dir: Path,
+    trackers: tuple[str, ...] | None = DEFAULT_KML_TRACKERS,
+) -> Path | None:
     """Best-effort: a KMZ bug must never block the CSV writes."""
     if not all_tracks:
         return None
     try:
         kml_dir.mkdir(parents=True, exist_ok=True)
         path = kml_dir / "tracks.kmz"
-        build_kmz(all_tracks).savekmz(str(path))
+        build_kmz(all_tracks, trackers).savekmz(str(path))
         return path
     except Exception:
         logger.exception("KMZ generation failed")
@@ -414,6 +476,7 @@ def ingest(
     predictions_dir: Path,
     kml_dir: Path | None = None,
     kml_base_url: str | None = None,
+    kml_trackers: tuple[str, ...] | None = DEFAULT_KML_TRACKERS,
 ) -> int:
     """Convert every deployment file's tracks into prediction files.
 
@@ -440,7 +503,7 @@ def ingest(
                 written_dirs.get((deployment, float_id), []),
             )
     if kml_dir is not None:
-        write_kmz(all_tracks, kml_dir)
+        write_kmz(all_tracks, kml_dir, kml_trackers)
         if kml_base_url:
             write_network_link(kml_base_url, kml_dir)
     return written
@@ -469,13 +532,24 @@ def main() -> None:
         help="where --kml-dir's contents will be reachable from (e.g. a "
         "raw.githubusercontent.com URL) -- enables live_tracks.kml",
     )
+    ap.add_argument(
+        "--kml-trackers",
+        default=",".join(DEFAULT_KML_TRACKERS),
+        help="comma-separated tracker names to draw in the KMZ (default: "
+        "%(default)s); 'all' draws every tracker present. Only affects the "
+        "KMZ -- predictions and the comparison PNG always cover every tracker.",
+    )
     args = ap.parse_args()
 
+    kml_trackers = (
+        None if args.kml_trackers == "all" else tuple(args.kml_trackers.split(","))
+    )
     n = ingest(
         Path(args.localization_dir),
         Path(args.predictions_dir),
         Path(args.kml_dir) if args.kml_dir else None,
         args.kml_base_url,
+        kml_trackers,
     )
     print(f"Wrote {n} prediction file(s)")
 

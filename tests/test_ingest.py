@@ -196,6 +196,34 @@ def test_ingest_bad_file_does_not_touch_existing_predictions(tmp_path):
 # ── KMZ / Google Earth ──────────────────────────────────────────
 
 
+def test_build_kmz_default_trackers_excludes_pf():
+    """Too many overlapping lines otherwise; ekf/ops/pf_lag2h only --
+    the fixture's "pf" (2 hr lag not applied) is not in that set."""
+    tracks = read_tracks(FIXTURE)
+    xml = build_kmz(tracks).kml()
+
+    assert "<name>ekf</name>" in xml
+    assert "<name>ops</name>" in xml
+    assert "<name>pf</name>" not in xml
+
+
+def test_build_kmz_trackers_none_includes_everything():
+    tracks = read_tracks(FIXTURE)
+    xml = build_kmz(tracks, trackers=None).kml()
+
+    for tracker in ("ekf", "ops", "pf"):
+        assert f"<name>{tracker}</name>" in xml
+
+
+def test_build_kmz_custom_trackers_filter():
+    tracks = read_tracks(FIXTURE)
+    xml = build_kmz(tracks, trackers=("pf",)).kml()
+
+    assert "<name>pf</name>" in xml
+    assert "<name>ekf</name>" not in xml
+    assert "<name>ops</name>" not in xml
+
+
 def test_build_kmz_folder_structure_and_recency_marker():
     tracks = read_tracks(FIXTURE)
     kml = build_kmz(tracks)
@@ -212,15 +240,35 @@ def test_build_kmz_folder_structure_and_recency_marker():
     assert "ekf forecast" in xml
 
 
-def test_build_kmz_same_tracker_same_color_as_png_palette():
-    from autopilot.ingest import _TRACKER_PALETTE
+def test_build_kmz_colors_by_drifter_not_tracker():
+    """em10962 has 3 trackers, mlf95 has 1 -> if colored per drifter,
+    exactly 2 distinct full-alpha colors appear (one per float); the
+    old per-tracker coloring would show up to 4."""
+    import re
 
-    tracks = {("A1", "em10962", "ekf"): read_tracks(FIXTURE)[("A1", "em10962", "ekf")]}
-    xml = build_kmz(tracks).kml()
+    tracks = read_tracks(FIXTURE)
+    xml = build_kmz(tracks, trackers=None).kml()  # every tracker included
 
-    r, g, b = _TRACKER_PALETTE["ekf"]
-    expected = f"ff{b:02x}{g:02x}{r:02x}"  # KML color is aabbggrr
-    assert expected in xml
+    full_alpha_colors = set(re.findall(r"<color>ff([0-9a-f]{6})</color>", xml))
+    assert len(full_alpha_colors) == 2
+
+
+def test_drifter_colors_deterministic_and_in_range():
+    from autopilot.ingest import _drifter_colors
+
+    colors = _drifter_colors(["b_float", "a_float", "c_float"])
+
+    assert set(colors) == {"a_float", "b_float", "c_float"}
+    assert all(0 <= v <= 255 for rgb in colors.values() for v in rgb)
+    assert colors["a_float"] != colors["c_float"]  # opposite ends of the map
+
+
+def test_drifter_colors_single_float_does_not_crash():
+    from autopilot.ingest import _drifter_colors
+
+    colors = _drifter_colors(["only_float"])
+
+    assert "only_float" in colors
 
 
 def test_write_kmz_produces_a_valid_zip_with_doc_kml(tmp_path):
