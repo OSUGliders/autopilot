@@ -143,9 +143,26 @@ web dashboard shows it under "Compare tracking methods" on a glider's
 page for whichever target is currently selected, no matter which
 tracker. A plotting failure never blocks the CSV writes.
 
-In production this runs as the second `ExecStart=` line in
-`deploy/autopilot-rsync-predictions.service`, right after the rsync
-pull (see Deploy on the VM, below).
+With `--kml-dir`, it also writes a combined **`tracks.kmz`** for
+Google Earth — every deployment/float/tracker as a toggleable folder,
+same visual language as the PNG (solid observed line, lighter forecast
+line, a bigger marker at each tracker's most recent fix). Add
+`--kml-base-url` and it also writes `live_tracks.kml`, a tiny Network
+Link file: open that once in Google Earth and it re-fetches
+`tracks.kmz` every 10 minutes on its own — no manual re-opening. Since
+the web dashboard is LAN-only, `tracks.kmz`/`live_tracks.kml` get
+published somewhere reachable from anywhere instead: `deploy/
+autopilot-publish-kmz` pushes `--kml-dir`'s contents (written straight
+into that git working copy) to a public GitHub repo dedicated to this
+live data, so `--kml-base-url` is that repo's
+`raw.githubusercontent.com` URL. It keeps history lean — amends and
+force-pushes each cycle rather than one commit per ~10 minutes forever
+— since this is a live snapshot, not something worth a full history
+of.
+
+In production these run as the three `ExecStart=` lines in
+`deploy/autopilot-rsync-predictions.service`: rsync pull, ingest
+(predictions + plots + KMZ), then publish.
 
 ## Run live
 
@@ -366,6 +383,51 @@ Target changes apply at the next surfacing when the glider's config
 has `config_file:` set (live reload); otherwise the page reminds you
 a restart is needed. Turning a glider on/off uses
 `enable/disable --now`, so the choice also survives VM reboots.
+
+### Prediction sync and live tracks
+
+`deploy/autopilot-rsync-predictions.{service,timer}` run every 10
+minutes: pull the remote localization feed, convert it (predictions +
+comparison plots + `tracks.kmz`), then publish the KMZ. See Real-time
+predictions, above, for what each step does; setup for the pieces
+that need real credentials:
+
+```sh
+# Pull: a dedicated SSH key for the rsync source (no --delete; see
+# above for why), host key pinned so the first unattended run can't
+# silently trust an unverified host:
+sudo ssh-keygen -t ed25519 -N "" -f /etc/autopilot/rsync_id_ed25519
+sudo ssh-keyscan -t ed25519 <remote-host> | sudo tee /etc/autopilot/known_hosts
+# verify the fetched host key's fingerprint against one you trust before
+# relying on it — ssh-keygen -lf /etc/autopilot/known_hosts
+
+# Publish: a repo-scoped SSH deploy key for the public GitHub repo
+# dedicated to this live data (create that repo yourself first — a
+# new one, kept separate from this software repo, since a KMZ
+# rewritten every ~10 minutes would otherwise bloat this repo's
+# history):
+sudo ssh-keygen -t ed25519 -N "" -f /etc/autopilot/kml_push_id_ed25519
+cat /etc/autopilot/kml_push_id_ed25519.pub
+# -> paste into that repo's Settings -> Deploy keys -> Add deploy key,
+#    with "Allow write access" checked
+sudo -u autopilot git clone git@github.com:<org>/<repo>.git /srv/autopilot/kml-repo
+cd /srv/autopilot/kml-repo
+sudo -u autopilot git config core.sshCommand \
+    "ssh -i /etc/autopilot/kml_push_id_ed25519 -o IdentitiesOnly=yes"
+```
+
+Then fill in `REMOTE_HOST`, the remote path, and the GitHub org/repo
+in `deploy/autopilot-rsync-predictions.service` and install it as
+usual (`cp` to `/etc/systemd/system/`, `daemon-reload`,
+`enable --now` the `.timer`, not the `.service`). Test each step by
+hand first — `systemctl start autopilot-rsync-predictions.service`
+then `journalctl -u autopilot-rsync-predictions.service -n 30` —
+before trusting the timer.
+
+Once `live_tracks.kml` exists in the repo (it's written alongside
+`tracks.kmz` whenever `--kml-base-url` is set), grab its
+`raw.githubusercontent.com` URL and open it in Google Earth once —
+it re-fetches `tracks.kmz` on its own from then on.
 
 ### Updating the code
 

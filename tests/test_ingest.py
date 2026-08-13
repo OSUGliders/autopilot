@@ -2,11 +2,20 @@
 
 import math
 import shutil
+import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 
 from autopilot.follower import PredictedTrackFollower
-from autopilot.ingest import deployment_files, ingest, read_tracks, write_track
+from autopilot.ingest import (
+    build_kmz,
+    deployment_files,
+    ingest,
+    read_tracks,
+    write_kmz,
+    write_network_link,
+    write_track,
+)
 
 FIXTURE = Path(__file__).parent / "fixtures" / "A1_float_tracks_latest.csv"
 
@@ -182,3 +191,94 @@ def test_ingest_bad_file_does_not_touch_existing_predictions(tmp_path):
 
     assert n == 0
     assert good.read_text() == original  # untouched
+
+
+# ── KMZ / Google Earth ──────────────────────────────────────────
+
+
+def test_build_kmz_folder_structure_and_recency_marker():
+    tracks = read_tracks(FIXTURE)
+    kml = build_kmz(tracks)
+    xml = kml.kml()
+
+    # Folder nesting: deployment > float > tracker.
+    assert "<name>A1</name>" in xml
+    assert "<name>em10962</name>" in xml
+    assert "<name>mlf95</name>" in xml
+    assert "<name>ekf</name>" in xml
+    # Most-recent marker per tracker, plus observed/forecast lines.
+    assert "ekf (most recent)" in xml
+    assert "ekf observed" in xml
+    assert "ekf forecast" in xml
+
+
+def test_build_kmz_same_tracker_same_color_as_png_palette():
+    from autopilot.ingest import _TRACKER_PALETTE
+
+    tracks = {("A1", "em10962", "ekf"): read_tracks(FIXTURE)[("A1", "em10962", "ekf")]}
+    xml = build_kmz(tracks).kml()
+
+    r, g, b = _TRACKER_PALETTE["ekf"]
+    expected = f"ff{b:02x}{g:02x}{r:02x}"  # KML color is aabbggrr
+    assert expected in xml
+
+
+def test_write_kmz_produces_a_valid_zip_with_doc_kml(tmp_path):
+    tracks = read_tracks(FIXTURE)
+
+    path = write_kmz(tracks, tmp_path)
+
+    assert path == tmp_path / "tracks.kmz"
+    with zipfile.ZipFile(path) as z:
+        assert "doc.kml" in z.namelist()
+
+
+def test_write_kmz_empty_tracks_writes_nothing(tmp_path):
+    assert write_kmz({}, tmp_path) is None
+    assert not (tmp_path / "tracks.kmz").exists()
+
+
+def test_write_network_link_points_at_kmz_url(tmp_path):
+    path = write_network_link(
+        "https://raw.githubusercontent.com/org/repo/main/", tmp_path
+    )
+
+    assert path == tmp_path / "live_tracks.kml"
+    text = path.read_text()
+    assert "https://raw.githubusercontent.com/org/repo/main/tracks.kmz" in text
+    assert "onInterval" in text
+
+
+def test_ingest_writes_kmz_and_network_link_when_requested(tmp_path):
+    loc = tmp_path / "localization"
+    loc.mkdir()
+    shutil.copy(FIXTURE, loc / "A1_float_tracks_latest.csv")
+    predictions = tmp_path / "predictions"
+    kml_dir = tmp_path / "kml"
+
+    ingest(loc, predictions, kml_dir=kml_dir, kml_base_url="https://example.com/live")
+
+    assert (kml_dir / "tracks.kmz").is_file()
+    assert (kml_dir / "live_tracks.kml").is_file()
+
+
+def test_ingest_skips_kml_entirely_by_default(tmp_path):
+    loc = tmp_path / "localization"
+    loc.mkdir()
+    shutil.copy(FIXTURE, loc / "A1_float_tracks_latest.csv")
+
+    ingest(loc, tmp_path / "predictions")  # no kml_dir
+
+    assert not (tmp_path / "tracks.kmz").exists()
+
+
+def test_ingest_kmz_without_base_url_skips_network_link(tmp_path):
+    loc = tmp_path / "localization"
+    loc.mkdir()
+    shutil.copy(FIXTURE, loc / "A1_float_tracks_latest.csv")
+    kml_dir = tmp_path / "kml"
+
+    ingest(loc, tmp_path / "predictions", kml_dir=kml_dir)  # no base url
+
+    assert (kml_dir / "tracks.kmz").is_file()
+    assert not (kml_dir / "live_tracks.kml").exists()

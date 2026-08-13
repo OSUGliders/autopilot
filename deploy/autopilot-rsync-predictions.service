@@ -8,14 +8,23 @@ Type=oneshot
 User=autopilot
 Group=glider_pilots
 UMask=0002
-# Edit REMOTE_HOST and the remote path for your site.
+# Edit REMOTE_HOST, the remote path, and the GitHub org/repo below for
+# your site.
+Environment=KML_REPO_DIR=/srv/autopilot/kml-repo
 #
-# Pull remote predictions.
+# Step 1: pull remote predictions.
 ExecStart=/usr/bin/rsync -az --timeout=60 \
     -e "ssh -i /etc/autopilot/rsync_id_ed25519 -o UserKnownHostsFile=/etc/autopilot/known_hosts -o StrictHostKeyChecking=yes -o BatchMode=yes" \
     predictions@REMOTE_HOST:/path/to/localization/ /srv/autopilot/localization/
 # Step 2: convert into per (deployment, float, tracker) prediction
+# files, plus a combined tracks.kmz + live_tracks.kml written straight
+# into the KML_REPO_DIR git clone (see autopilot-publish-kmz, step 3).
 ExecStart=/opt/autopilot/.venv/bin/autopilot-ingest-predictions \
     --localization-dir /srv/autopilot/localization/tracks \
-    --predictions-dir /srv/autopilot/predictions
+    --predictions-dir /srv/autopilot/predictions \
+    --kml-dir ${KML_REPO_DIR} \
+    --kml-base-url https://raw.githubusercontent.com/REPLACE_ORG/REPLACE_REPO/main
+# Step 3: publish the KMZ to GitHub so Google Earth (and anyone else)
+# can reach it from anywhere, not just this LAN -- see the README.
+ExecStart=/opt/autopilot/deploy/autopilot-publish-kmz
 TimeoutStartSec=120

@@ -1,0 +1,33 @@
+#!/bin/sh
+# Publish the KML/KMZ output directory to a public GitHub repo, so
+# Google Earth's Network Link (and anyone else) can fetch the live
+# fleet view from anywhere -- not just the LAN the web dashboard lives
+# on.
+#
+# Expects a git working copy already cloned at $KML_REPO_DIR, with a
+# push-capable remote configured (a repo-scoped SSH deploy key with
+# write access is recommended -- see the README).  autopilot-ingest-
+# predictions writes tracks.kmz (and live_tracks.kml) directly into
+# this same directory via --kml-dir, so there is nothing to copy here.
+#
+# Keeps history lean: amends the previous commit and force-pushes,
+# rather than growing one commit per ~10-minute cycle forever -- this
+# is a live snapshot, not something worth a full history of.
+set -eu
+
+: "${KML_REPO_DIR:?KML_REPO_DIR is not set}"
+
+cd "$KML_REPO_DIR"
+git add -A
+
+if git diff --cached --quiet; then
+    echo "No changes to publish"
+    exit 0
+fi
+
+if git rev-parse HEAD >/dev/null 2>&1; then
+    git commit --amend --no-edit
+else
+    git commit -m "Live tracks"
+fi
+git push --force

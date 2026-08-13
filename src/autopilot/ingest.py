@@ -41,6 +41,19 @@ the web dashboard can show it for whichever target is currently
 selected with zero new path parsing: it already has ``predictions_dir``
 in hand.  A plotting failure never blocks the CSV writes.
 
+Also writes one combined KMZ (with ``--kml-dir``), covering every
+asset found this cycle, for viewing the whole fleet in Google Earth:
+Folder per deployment > float > tracker, each with an observed line, a
+forecast line, and a bigger marker at the most recent estimate — the
+same visual language as the comparison PNG.  With ``--kml-base-url``
+also set, a second, tiny "network link" KML is written alongside it;
+opened once in Google Earth, that one re-fetches the KMZ on an
+interval by itself — see ``deploy/autopilot-publish-kmz`` for how this
+gets published somewhere Earth can actually reach it (this module
+knows nothing about git/GitHub; it only ever writes local files).
+Both are best-effort, like the comparison plot — never allowed to
+block the CSV writes.
+
 Run with: autopilot-ingest-predictions --localization-dir DIR --predictions-dir DIR
 """
 
@@ -60,6 +73,7 @@ import matplotlib
 
 matplotlib.use("Agg")  # runs headless (systemd timer / CLI)
 import matplotlib.pyplot as plt
+import simplekml
 
 logger = logging.getLogger("autopilot.ingest")
 
@@ -67,6 +81,27 @@ DEPLOYMENT_FILE_RE = re.compile(
     r"^(?P<deployment>[A-Za-z0-9]+)_float_tracks_latest\.csv$"
 )
 _SAFE = re.compile(r"[^A-Za-z0-9_]+")
+
+# Matches matplotlib's tab10 cycle in sorted-tracker order, so a
+# tracker is the same color in the KMZ as in the comparison PNG.
+_TRACKER_PALETTE = {
+    "batch": (31, 119, 180),
+    "ekf": (255, 127, 14),
+    "ops": (44, 160, 44),
+    "pf": (214, 39, 40),
+    "pf_lag2h": (148, 103, 189),
+}
+_FALLBACK_COLORS = [(140, 86, 75), (227, 119, 194), (127, 127, 127)]
+
+
+def _tracker_rgb(tracker: str, fallback_seen: dict[str, tuple[int, int, int]]):
+    if tracker in _TRACKER_PALETTE:
+        return _TRACKER_PALETTE[tracker]
+    if tracker not in fallback_seen:
+        fallback_seen[tracker] = _FALLBACK_COLORS[
+            len(fallback_seen) % len(_FALLBACK_COLORS)
+        ]
+    return fallback_seen[tracker]
 
 
 def _slug(*parts: str) -> str:
@@ -279,14 +314,116 @@ def write_comparison_plot(
         logger.exception("Comparison plot failed for %s/%s", deployment, float_id)
 
 
-def ingest(localization_dir: Path, predictions_dir: Path) -> int:
+def build_kmz(
+    all_tracks: dict[tuple[str, str, str], list[tuple[datetime, float, float, str]]],
+) -> simplekml.Kml:
+    """One KML Document, Folder per deployment > float > tracker.
+
+    Same visual language as :func:`_plot_comparison`: solid line for
+    observed, lighter/thinner dashed-style line for forecast, and a
+    bigger marker at the most recent estimate.  KML has no true dashed
+    line style, so forecast segments are distinguished by reduced
+    opacity instead.
+    """
+    kml = simplekml.Kml()
+    fallback_seen: dict[str, tuple[int, int, int]] = {}
+
+    by_deployment: dict[str, dict[str, dict[str, list]]] = defaultdict(
+        lambda: defaultdict(dict)
+    )
+    for (deployment, float_id, tracker), rows in all_tracks.items():
+        by_deployment[deployment][float_id][tracker] = rows
+
+    for deployment in sorted(by_deployment):
+        dep_folder = kml.newfolder(name=deployment)
+        for float_id in sorted(by_deployment[deployment]):
+            float_folder = dep_folder.newfolder(name=float_id)
+            for tracker in sorted(by_deployment[deployment][float_id]):
+                rows = by_deployment[deployment][float_id][tracker]
+                obs = [
+                    (lon, lat, t) for t, lat, lon, kind in rows if kind == "estimate"
+                ]
+                pred = [
+                    (lon, lat) for _, lat, lon, kind in rows if kind == "prediction"
+                ]
+                rgb = _tracker_rgb(tracker, fallback_seen)
+                tracker_folder = float_folder.newfolder(name=tracker)
+                if obs:
+                    ls = tracker_folder.newlinestring(
+                        name=f"{tracker} observed",
+                        coords=[(lon, lat) for lon, lat, _ in obs],
+                    )
+                    ls.style.linestyle.color = simplekml.Color.rgb(*rgb)
+                    ls.style.linestyle.width = 3
+                if pred:
+                    label = "forecast" if obs else "forecast only"
+                    ls = tracker_folder.newlinestring(
+                        name=f"{tracker} {label}", coords=pred
+                    )
+                    ls.style.linestyle.color = simplekml.Color.rgb(*rgb, 140)
+                    ls.style.linestyle.width = 2
+                if obs:
+                    last_lon, last_lat, last_t = max(obs, key=lambda o: o[2])
+                    pnt = tracker_folder.newpoint(
+                        name=f"{tracker} (most recent)", coords=[(last_lon, last_lat)]
+                    )
+                    pnt.style.iconstyle.scale = 1.4
+                    pnt.style.iconstyle.color = simplekml.Color.rgb(*rgb)
+                    last_utc = last_t.astimezone(UTC)
+                    pnt.timestamp.when = last_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+                    pnt.description = f"Last estimate: {last_utc:%Y-%m-%d %H:%M} UTC"
+    return kml
+
+
+def write_kmz(all_tracks: dict, kml_dir: Path) -> Path | None:
+    """Best-effort: a KMZ bug must never block the CSV writes."""
+    if not all_tracks:
+        return None
+    try:
+        kml_dir.mkdir(parents=True, exist_ok=True)
+        path = kml_dir / "tracks.kmz"
+        build_kmz(all_tracks).savekmz(str(path))
+        return path
+    except Exception:
+        logger.exception("KMZ generation failed")
+        return None
+
+
+def write_network_link(base_url: str, kml_dir: Path) -> Path | None:
+    """A tiny KML that Google Earth re-fetches on an interval.  Opened
+    once, it keeps showing whatever tracks.kmz currently holds without
+    any further manual action — see deploy/autopilot-publish-kmz for
+    how tracks.kmz actually gets somewhere Earth can reach it.
+    """
+    try:
+        link = simplekml.Kml()
+        nl = link.newnetworklink(name="Autopilot live tracks")
+        nl.link.href = f"{base_url.rstrip('/')}/tracks.kmz"
+        nl.link.refreshmode = simplekml.RefreshMode.oninterval
+        nl.link.refreshinterval = 600  # seconds; matches the ingest cadence
+        path = kml_dir / "live_tracks.kml"
+        link.save(str(path))
+        return path
+    except Exception:
+        logger.exception("Network-link KML generation failed")
+        return None
+
+
+def ingest(
+    localization_dir: Path,
+    predictions_dir: Path,
+    kml_dir: Path | None = None,
+    kml_base_url: str | None = None,
+) -> int:
     """Convert every deployment file's tracks into prediction files.
 
     Returns the number of (deployment, float, tracker) files written.
     """
     written = 0
+    all_tracks: dict[tuple[str, str, str], list] = {}
     for path in deployment_files(localization_dir):
         tracks = read_tracks(path)
+        all_tracks.update(tracks)
         by_asset: dict[tuple[str, str], dict[str, list]] = defaultdict(dict)
         written_dirs: dict[tuple[str, str], list[Path]] = defaultdict(list)
         for (deployment, float_id, tracker), rows in tracks.items():
@@ -302,6 +439,10 @@ def ingest(localization_dir: Path, predictions_dir: Path) -> int:
                 by_tracker,
                 written_dirs.get((deployment, float_id), []),
             )
+    if kml_dir is not None:
+        write_kmz(all_tracks, kml_dir)
+        if kml_base_url:
+            write_network_link(kml_base_url, kml_dir)
     return written
 
 
@@ -316,9 +457,26 @@ def main() -> None:
     ap.add_argument(
         "--predictions-dir", default="predictions", help="default: %(default)s"
     )
+    ap.add_argument(
+        "--kml-dir",
+        default=None,
+        help="write tracks.kmz (and, with --kml-base-url, live_tracks.kml) here; "
+        "omit to skip KML output entirely",
+    )
+    ap.add_argument(
+        "--kml-base-url",
+        default=None,
+        help="where --kml-dir's contents will be reachable from (e.g. a "
+        "raw.githubusercontent.com URL) -- enables live_tracks.kml",
+    )
     args = ap.parse_args()
 
-    n = ingest(Path(args.localization_dir), Path(args.predictions_dir))
+    n = ingest(
+        Path(args.localization_dir),
+        Path(args.predictions_dir),
+        Path(args.kml_dir) if args.kml_dir else None,
+        args.kml_base_url,
+    )
     print(f"Wrote {n} prediction file(s)")
 
 
