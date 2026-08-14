@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Shore-side autopilot for Slocum gliders following drifting floats via SFMC"
 requires-python = ">=3.12"
 dependencies = [
+    "dbdreader>=0.6.3",
     "flask>=3.0",
     "matplotlib>=3.11.0",
     "numpy>=2.5.0",
@@ -23,6 +24,8 @@ autopilot-live-drifter = "autopilot.sim.live_drifter:main"
 autopilot-follow = "autopilot.launch:main"
 autopilot-web = "autopilot.web:main"
 autopilot-ingest-predictions = "autopilot.ingest:main"
+autopilot-acoustic-watch = "autopilot.acoustic.watch:main"
+autopilot-acoustic-staleness = "autopilot.acoustic.staleness:main"
 
 [dependency-groups]
 dev = [
