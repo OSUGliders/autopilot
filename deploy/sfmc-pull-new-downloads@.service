@@ -9,11 +9,13 @@ Group=glider_pilots
 UMask=0002
 WorkingDirectory=/srv/autopilot
 # --host is required because /etc/autopilot/credentials.json holds
-# more than one SFMC host; osusim/osu685 etc. all live on gliderfmc1.
+# more than one SFMC host; real gliders live on gliderfmc0. Instances
+# that don't (e.g. osusim, on gliderfmc1) need a host override -- see
+# sfmc-pull-new-downloads@osusim.service.d/.
 ExecStart=/opt/autopilot/.venv/bin/sfmc-pull-new-downloads %i \
     /srv/autopilot/acoustic-raw/%i \
     --credentials /etc/autopilot/credentials.json \
-    --host gliderfmc1.ceoas.oregonstate.edu
+    --host gliderfmc0.ceoas.oregonstate.edu
 Restart=on-failure
 RestartSec=30
 
