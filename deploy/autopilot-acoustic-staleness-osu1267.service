@@ -18,7 +18,7 @@ ExecStart=/opt/autopilot/.venv/bin/autopilot-acoustic-staleness \
     --glider osu1267 \
     --primary-dir /srv/autopilot/acoustic-raw/osu1267 --primary-extension tbd \
     --corroboration-dir /srv/autopilot/acoustic-raw/osu1267 --corroboration-extension sbd \
-    --max-gap-minutes 180 --corroboration-window-minutes 60 \
+    --max-gap-minutes 120 --corroboration-window-minutes 60 \
     --state /srv/autopilot/acoustic-alert/osu1267-staleness.json \
     --slack-webhook-url-file /etc/autopilot/slack_webhook_url
 Restart=on-failure
