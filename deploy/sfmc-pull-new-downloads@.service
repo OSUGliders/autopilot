@@ -1,0 +1,18 @@
+[Unit]
+Description=Mirror from-glider files for %i into the local acoustic-raw tree
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=autopilot
+Group=glider_pilots
+UMask=0002
+WorkingDirectory=/srv/autopilot
+ExecStart=/opt/autopilot/.venv/bin/sfmc-pull-new-downloads %i \
+    /srv/autopilot/acoustic-raw/%i \
+    --credentials /etc/autopilot/credentials.json
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

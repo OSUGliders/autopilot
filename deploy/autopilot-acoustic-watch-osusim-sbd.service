@@ -1,0 +1,22 @@
+[Unit]
+Description=Acoustic-data watcher: osusim sbd presence check (test deployment)
+After=network-online.target sfmc-pull-new-downloads@osusim.service
+Wants=network-online.target
+
+[Service]
+User=autopilot
+Group=glider_pilots
+UMask=0002
+WorkingDirectory=/srv/autopilot
+ExecStart=/opt/autopilot/.venv/bin/autopilot-acoustic-watch \
+    --glider osusim --extension sbd \
+    --input-dir /srv/autopilot/acoustic-raw/osusim \
+    --cache-dir /srv/autopilot/acoustic-cache \
+    --variable m_present_time \
+    --ledger /srv/autopilot/acoustic-alert/osusim-sbd.json \
+    --slack-webhook-url-file /etc/autopilot/slack_webhook_url
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
