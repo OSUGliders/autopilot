@@ -1,0 +1,29 @@
+[Unit]
+Description=Acoustic-data watcher: osu1267 tbd interrogation-rate check
+After=network-online.target sfmc-pull-new-downloads@osu1267.service
+Wants=network-online.target
+
+[Service]
+User=autopilot
+Group=glider_pilots
+UMask=0002
+WorkingDirectory=/srv/autopilot
+# See autopilot-acoustic-watch-osusim-sbd.service for why HOME is set.
+Environment=HOME=/srv/autopilot
+# sci_generic_k == 10 marks an interrogation-sent event; expected
+# roughly every couple of minutes, so 0.3/min gives margin below that
+# while real-world rates are still being confirmed -- tune after
+# watching a few days of logged rates.
+ExecStart=/opt/autopilot/.venv/bin/autopilot-acoustic-watch \
+    --glider osu1267 --extension tbd \
+    --input-dir /srv/autopilot/acoustic-raw/osu1267 \
+    --cache-dir /srv/autopilot/acoustic-cache \
+    --variable sci_generic_k --equals 10 \
+    --duration-variable sci_m_present_time --min-rate-per-minute 0.3 \
+    --ledger /srv/autopilot/acoustic-alert/osu1267-tbd.json \
+    --slack-webhook-url-file /etc/autopilot/slack_webhook_url
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

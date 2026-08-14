@@ -1,0 +1,28 @@
+[Unit]
+Description=Acoustic-data staleness detector: osu1267 tbd vs sbd
+After=network-online.target sfmc-pull-new-downloads@osu1267.service
+Wants=network-online.target
+
+[Service]
+User=autopilot
+Group=glider_pilots
+UMask=0002
+WorkingDirectory=/srv/autopilot
+Environment=HOME=/srv/autopilot
+# Both extensions live in the same mirror dir (sfmc-pull-new-downloads
+# pulls every file type into one place) -- primary/corroboration only
+# differ by which extension they match within it. Thresholds are a
+# starting guess; tune --max-gap-minutes once osu1267's real surfacing
+# cadence is visible in the logs.
+ExecStart=/opt/autopilot/.venv/bin/autopilot-acoustic-staleness \
+    --glider osu1267 \
+    --primary-dir /srv/autopilot/acoustic-raw/osu1267 --primary-extension tbd \
+    --corroboration-dir /srv/autopilot/acoustic-raw/osu1267 --corroboration-extension sbd \
+    --max-gap-minutes 180 --corroboration-window-minutes 60 \
+    --state /srv/autopilot/acoustic-alert/osu1267-staleness.json \
+    --slack-webhook-url-file /etc/autopilot/slack_webhook_url
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
