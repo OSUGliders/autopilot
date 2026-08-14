@@ -8,6 +8,11 @@ User=autopilot
 Group=glider_pilots
 UMask=0002
 WorkingDirectory=/srv/autopilot
+# dbdreader creates $HOME/.local/share/dbdreader at import time
+# (unrelated to --cache-dir below, which is our own sensor-config
+# cache) -- the autopilot service account has no writable home, so
+# HOME must be pointed somewhere it can create that directory.
+Environment=HOME=/srv/autopilot
 ExecStart=/opt/autopilot/.venv/bin/autopilot-acoustic-watch \
     --glider osusim --extension sbd \
     --input-dir /srv/autopilot/acoustic-raw/osusim \
