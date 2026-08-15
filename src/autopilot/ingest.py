@@ -328,12 +328,21 @@ DEFAULT_KML_TRACKERS = ("ekf", "ops", "pf_lag2h")
 def _style_track(
     track, rgb: tuple[int, int, int], width: float, alpha: int, icon_scale: float
 ) -> None:
-    """Thin line + small circle icon (shown as the gx:Track scrubs)."""
-    track.stylemap.normalstyle.linestyle.color = simplekml.Color.rgb(*rgb, alpha)
-    track.stylemap.normalstyle.linestyle.width = width
-    track.stylemap.normalstyle.iconstyle.icon.href = _CIRCLE_ICON
-    track.stylemap.normalstyle.iconstyle.scale = icon_scale
-    track.stylemap.normalstyle.iconstyle.color = simplekml.Color.rgb(*rgb, alpha)
+    """Thin line + small circle icon (shown as the gx:Track scrubs).
+
+    A gx:Track's style is a StyleMap (normal/highlight pair), and
+    Google Earth falls back to its default yellow pushpin for whichever
+    pair is left unset -- setting only normalstyle showed the intended
+    circle *and* a stray default pin stacked on top of it. Both pairs
+    get the identical style so nothing ever falls back.
+    """
+    color = simplekml.Color.rgb(*rgb, alpha)
+    for style in (track.stylemap.normalstyle, track.stylemap.highlightstyle):
+        style.linestyle.color = color
+        style.linestyle.width = width
+        style.iconstyle.icon.href = _CIRCLE_ICON
+        style.iconstyle.scale = icon_scale
+        style.iconstyle.color = color
 
 
 def build_kmz(
@@ -360,6 +369,12 @@ def build_kmz(
     rows.  Full opacity for observed, lighter for forecast (KML has no
     true dashed line style), and a bigger marker at the most recent
     estimate.
+
+    Forecast points additionally each get their own small, individually
+    clickable Placemark (a gx:Track has no per-point click target) —
+    clicking one shows the asset id, predicted time (as both an
+    absolute UTC time and a lead time from the last real estimate), and
+    lat/lon.
 
     *trackers* restricts which tracking methods appear at all (default
     :data:`DEFAULT_KML_TRACKERS`) — with every method included, the
@@ -419,8 +434,10 @@ def build_kmz(
                     )
                     trk.newgxcoord([(lon, lat) for _, lat, lon in pred])
                     _style_track(trk, rgb, width=1.0, alpha=140, icon_scale=0.5)
-                if obs:
-                    last_t, last_lat, last_lon = max(obs, key=lambda o: o[0])
+                last_obs = max(obs, key=lambda o: o[0]) if obs else None
+                last_t = last_obs[0] if last_obs else None
+                if last_obs is not None:
+                    _, last_lat, last_lon = last_obs
                     pnt = tracker_folder.newpoint(
                         name=f"{tracker} (most recent)", coords=[(last_lon, last_lat)]
                     )
@@ -429,7 +446,36 @@ def build_kmz(
                     pnt.style.iconstyle.color = simplekml.Color.rgb(*rgb)
                     last_utc = last_t.astimezone(UTC)
                     pnt.timestamp.when = last_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
-                    pnt.description = f"Last estimate: {last_utc:%Y-%m-%d %H:%M} UTC"
+                    pnt.description = (
+                        f"Asset: {float_id}\n"
+                        f"Last estimate: {last_utc:%Y-%m-%d %H:%M} UTC\n"
+                        f"{last_lat:.4f}, {last_lon:.4f}"
+                    )
+                # A small, individually clickable marker per forecast
+                # point -- separate from the forecast gx:Track (which
+                # only shows position, no per-point detail on click).
+                # Lead time is measured from the last real estimate
+                # ("now" for tracking purposes), not from ingest
+                # wall-clock time, matching write_track's own anchor.
+                for t, lat, lon in pred:
+                    lead_h = (t - last_t).total_seconds() / 3600 if last_t else None
+                    t_utc = t.astimezone(UTC)
+                    label = f"+{lead_h:.1f}h" if lead_h is not None else "forecast"
+                    pnt = tracker_folder.newpoint(
+                        name=f"{tracker} {label}", coords=[(lon, lat)]
+                    )
+                    pnt.style.iconstyle.icon.href = _CIRCLE_ICON
+                    pnt.style.iconstyle.scale = 0.35
+                    pnt.style.iconstyle.color = simplekml.Color.rgb(*rgb, 180)
+                    pnt.timestamp.when = t_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+                    desc = [
+                        f"Asset: {float_id}",
+                        f"Predicted: {t_utc:%Y-%m-%d %H:%M} UTC",
+                    ]
+                    if lead_h is not None:
+                        desc.append(f"({lead_h:+.1f} h from last estimate)")
+                    desc.append(f"{lat:.4f}, {lon:.4f}")
+                    pnt.description = "\n".join(desc)
     return kml
 
 

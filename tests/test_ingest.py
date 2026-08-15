@@ -240,6 +240,56 @@ def test_build_kmz_folder_structure_and_recency_marker():
     assert "ekf forecast" in xml
 
 
+def test_build_kmz_track_style_sets_normal_and_highlight():
+    """A gx:Track's StyleMap left with only normalstyle set makes
+    Google Earth fall back to its default pushpin for the highlight
+    pair, showing up stacked on the intended circle. Both pairs must
+    resolve to a real style with the circle icon."""
+    import re
+
+    tracks = read_tracks(FIXTURE)
+    xml = build_kmz(tracks).kml()
+
+    # Every StyleMap's normal and highlight pair must each point at a
+    # Style that actually sets the circle icon (not an empty fallback).
+    style_by_id = dict(re.findall(r'<Style id="(\d+)">(.*?)</Style>', xml, re.S))
+    for pair_style_id in re.findall(r"<styleUrl>#(\d+)</styleUrl>", xml):
+        style_body = style_by_id.get(pair_style_id)
+        if style_body is None:
+            continue  # a Point's own direct style, not part of a StyleMap
+        if "<IconStyle" in style_body:
+            assert "placemark_circle.png" in style_body
+
+
+def test_build_kmz_recency_marker_includes_asset_id():
+    tracks = read_tracks(FIXTURE)
+    xml = build_kmz(tracks).kml()
+
+    start = xml.index("<name>ekf (most recent)</name>")
+    description = xml[start : start + 300]
+    assert "Asset: em10962" in description
+
+
+def test_build_kmz_forecast_points_get_clickable_markers():
+    """Each forecast row gets its own small Placemark (separate from
+    the forecast gx:Track) with lead time, absolute time, and lat/lon
+    -- clicking the track itself shows nothing per-point."""
+    tracks = read_tracks(FIXTURE)
+    xml = build_kmz(tracks).kml()
+
+    # Real fixture: em10962/ekf has 2 prediction rows, +2h and +4h from
+    # the 19:18:49 last estimate (see test_read_tracks_keeps_only_latest_segment).
+    assert "<name>ekf +2.0h</name>" in xml
+    assert "<name>ekf +4.0h</name>" in xml
+
+    start = xml.index("<name>ekf +2.0h</name>")
+    description = xml[start : start + 300]
+    assert "Asset: em10962" in description
+    assert "Predicted: 2026-08-07 21:18 UTC" in description
+    assert "+2.0 h from last estimate" in description
+    assert "33.6142, -120.5135" in description
+
+
 def test_build_kmz_colors_by_drifter_not_tracker():
     """em10962 has 3 trackers, mlf95 has 1 -> if colored per drifter,
     exactly 2 distinct full-alpha colors appear (one per float); the
