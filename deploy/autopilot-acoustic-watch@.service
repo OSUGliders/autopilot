@@ -14,29 +14,18 @@ WorkingDirectory=/srv/autopilot
 Environment=HOME=/srv/autopilot
 # sci_generic_k == 10 marks an interrogation-sent event. Everything
 # below was calibrated on real osu1267 data (367 tbd files, 08-03 to
-# 08-14) and is assumed fleet-wide; recalibrate per glider if a
-# mission's acoustic config differs (add a drop-in like
-# sfmc-pull-new-downloads@osusim.service.d/ rather than editing this
-# template):
+# 08-14)
 #
-# - Interrogations fire every ~5.42 min while ranging (p10-p90 of the
-#   real gap distribution: 5.41-5.43). --min-rate-per-minute 0.09 is
-#   half the baseline rate (x2 tolerance): catches spacing
-#   significantly greater than 5.42 min without flagging jitter.
-# - --min-bytes 1000: file sizes split cleanly -- small administrative
-#   surface segments top out at 647 bytes, next real size 1704; only 2
-#   of 198 files under the boundary ever held a k==10 event. These are
-#   fully exempted (not read, not counted, not announced).
-# - --threshold 1: with small files exempted there is no legitimate
-#   quiet period -- historical multi-hour zero-interrogation lulls were
-#   real failures pilots fixed by hand, so the first real-sized file
-#   that fails alerts immediately.
+# - Interrogations fire every ~5.42 min during RIOT 2026 IOP, equivalent to 0.18 per min 
+# --min-rate-per-minute 0.14 is a 7 min rate. 
+# - --min-bytes 1000: small administrative surface segments are skipped
+# - --threshold 1: with small files exempted the rest should contain acoustics
 ExecStart=/opt/autopilot/.venv/bin/autopilot-acoustic-watch \
     --glider %i --extension tbd \
     --input-dir /srv/autopilot/acoustic-raw/%i \
     --cache-dir /srv/autopilot/acoustic-cache \
     --variable sci_generic_k --equals 10 \
-    --duration-variable sci_m_present_time --min-rate-per-minute 0.09 \
+    --duration-variable sci_m_present_time --min-rate-per-minute 0.14 \
     --min-bytes 1000 \
     --threshold 1 \
     --ledger /srv/autopilot/acoustic-alert/%i-tbd.json \
