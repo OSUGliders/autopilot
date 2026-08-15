@@ -82,6 +82,19 @@ def distance_m(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
     return math.hypot(dx, dy)
 
 
+def offset_position(
+    lat: float, lon: float, north_m: float, east_m: float
+) -> tuple[float, float]:
+    """Shift (lat, lon) by a north/east offset in metres.
+
+    Negative north_m/east_m shift south/west. Same flat-earth
+    approximation as distance_m, fine at these scales.
+    """
+    new_lat = lat + north_m / M_PER_DEG_LAT
+    new_lon = lon + east_m / (M_PER_DEG_LAT * math.cos(math.radians(lat)))
+    return new_lat, new_lon
+
+
 class PredictedTrackFollower(BaseFollower):
     """Chase the drifter's predicted position at glider arrival time."""
 
@@ -101,6 +114,13 @@ class PredictedTrackFollower(BaseFollower):
         # Lead times (hours ahead of the surfacing) at which the
         # drifter's predicted positions become the goto waypoints.
         "waypoint_lead_h": ("waypoint_lead_h", None, [3.0, 6.0]),
+        # Shift each computed waypoint this many metres north/east of
+        # the predicted target (negative = south/west) -- e.g. to hold
+        # station off to one side of a drifter rather than directly on
+        # top of it. Applied before the safety gate, so fence/jump
+        # checks see the actual (offset) point that will be commanded.
+        "waypoint_offset_north_m": ("offset_north_m", float, 0.0),
+        "waypoint_offset_east_m": ("offset_east_m", float, 0.0),
         # -1 loops the waypoint list forever; -2 stops after the last.
         "num_legs_to_run": ("num_legs_to_run", int, -1),
         "max_prediction_age_h": ("max_age_h", float, 9.0),
@@ -408,6 +428,13 @@ class PredictedTrackFollower(BaseFollower):
             self.target_radius_km,
         )
 
+        if self.offset_north_m or self.offset_east_m:
+            logger.info(
+                "Applying waypoint offset: %.0f m north, %.0f m east",
+                self.offset_north_m,
+                self.offset_east_m,
+            )
+
         waypoints = []
         for lead_h in self.waypoint_lead_h:
             wpt_lat, wpt_lon, extrapolated = self._position_at(
@@ -418,6 +445,10 @@ class PredictedTrackFollower(BaseFollower):
                     "Lead time %.0f h is beyond the prediction horizon; "
                     "extrapolating past the last track point",
                     float(lead_h),
+                )
+            if self.offset_north_m or self.offset_east_m:
+                wpt_lat, wpt_lon = offset_position(
+                    wpt_lat, wpt_lon, self.offset_north_m, self.offset_east_m
                 )
             waypoints.append((wpt_lon, wpt_lat))
         return waypoints, (d_lat, d_lon), age_h

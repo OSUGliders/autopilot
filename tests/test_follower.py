@@ -12,9 +12,10 @@ from pathlib import Path
 from queue import Queue
 from types import SimpleNamespace
 
+import pytest
 import yaml
 
-from autopilot.follower import PredictedTrackFollower
+from autopilot.follower import M_PER_DEG_LAT, PredictedTrackFollower, offset_position
 from autopilot.safety import Verdict
 
 T0 = datetime(2026, 3, 22, 0, 0, tzinfo=UTC)
@@ -233,6 +234,100 @@ def test_set_notifier_sends_startup_confirmation():
     key, summary, detail, gap = calls[0]
     assert key == "startup" and gap == 0.0
     assert "sequence_number" in detail
+
+
+# ── Waypoint offset ───────────────────────────────────────────────
+
+
+def test_offset_position_shifts_north_and_east():
+    lat, lon = offset_position(30.0, -120.0, north_m=M_PER_DEG_LAT, east_m=0.0)
+    assert lat == pytest.approx(31.0)
+    assert lon == pytest.approx(-120.0)
+
+    lat, lon = offset_position(0.0, 0.0, north_m=0.0, east_m=M_PER_DEG_LAT)
+    assert lat == pytest.approx(0.0)
+    assert lon == pytest.approx(1.0)  # cos(0) == 1 at the equator
+
+
+def test_offset_position_negative_shifts_south_and_west():
+    lat, lon = offset_position(
+        30.0, -120.0, north_m=-M_PER_DEG_LAT, east_m=-M_PER_DEG_LAT
+    )
+    assert lat < 30.0
+    assert lon < -120.0
+
+
+TRACK = [
+    (T0, 33.0, -117.7),
+    (T0 + timedelta(hours=6), 33.1, -117.6),
+]
+EVENT_999 = SimpleNamespace(vehicle_name="osu999", gps_lat=33.0, gps_lon=-117.7)
+
+
+def test_compute_waypoints_no_offset_by_default():
+    follower = PredictedTrackFollower(
+        {"predictions_dir": "p", "waypoint_lead_h": [3.0]}, Queue(), Queue()
+    )
+    assert follower.offset_north_m == 0.0
+    assert follower.offset_east_m == 0.0
+
+    waypoints, _, _ = follower._compute_waypoints(EVENT_999, T0, TRACK, T0, "x.csv")
+
+    unoffset_lat, unoffset_lon, _ = PredictedTrackFollower._position_at(
+        TRACK, T0 + timedelta(hours=3)
+    )
+    wpt_lon, wpt_lat = waypoints[0]
+    assert wpt_lat == pytest.approx(unoffset_lat)
+    assert wpt_lon == pytest.approx(unoffset_lon)
+
+
+def test_compute_waypoints_applies_configured_offset():
+    follower = PredictedTrackFollower(
+        {
+            "predictions_dir": "p",
+            "waypoint_lead_h": [3.0],
+            "waypoint_offset_north_m": 500.0,
+            "waypoint_offset_east_m": -200.0,
+        },
+        Queue(),
+        Queue(),
+    )
+
+    waypoints, drifter_now, _ = follower._compute_waypoints(
+        EVENT_999, T0, TRACK, T0, "x.csv"
+    )
+
+    unoffset_lat, unoffset_lon, _ = PredictedTrackFollower._position_at(
+        TRACK, T0 + timedelta(hours=3)
+    )
+    expected_lat, expected_lon = offset_position(
+        unoffset_lat, unoffset_lon, 500.0, -200.0
+    )
+    wpt_lon, wpt_lat = waypoints[0]
+    assert wpt_lat == pytest.approx(expected_lat)
+    assert wpt_lon == pytest.approx(expected_lon)
+    assert (wpt_lat, wpt_lon) != pytest.approx((unoffset_lat, unoffset_lon))
+
+    # "drifter now" reflects the true predicted position, not the offset waypoint.
+    d_lat, d_lon = drifter_now
+    true_lat, true_lon, _ = PredictedTrackFollower._position_at(TRACK, T0)
+    assert d_lat == pytest.approx(true_lat)
+    assert d_lon == pytest.approx(true_lon)
+
+
+def test_reload_applies_waypoint_offset(tmp_path):
+    follower, cfg_path = reloading_follower(tmp_path)
+    assert follower.offset_north_m == 0.0
+    assert follower.offset_east_m == 0.0
+
+    new = yaml.safe_load(cfg_path.read_text())
+    new["waypoint_offset_north_m"] = 250.0
+    new["waypoint_offset_east_m"] = -100.0
+    rewrite(cfg_path, yaml.safe_dump(new))
+    follower._maybe_reload()
+
+    assert follower.offset_north_m == 250.0
+    assert follower.offset_east_m == -100.0
 
 
 # ── FALLBACK notification edges ─────────────────────────────────

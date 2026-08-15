@@ -177,16 +177,44 @@ def target_options(base: Path, config: dict) -> list[str]:
     return options
 
 
+def _rewrite_config_line(lines: list[str], key: str, value: object) -> None:
+    """Rewrite *key*'s line in *lines* in place if present, else append it."""
+    for i, line in enumerate(lines):
+        if re.match(rf"^{re.escape(key)}\s*:", line):
+            lines[i] = f"{key}: {value}\n"
+            break
+    else:
+        lines.append(f"{key}: {value}\n")
+
+
 def set_predictions_dir(config_path: Path, new: str) -> None:
     """Rewrite only the predictions_dir line, preserving all comments."""
     lines = config_path.read_text().splitlines(keepends=True)
-    for i, line in enumerate(lines):
-        if re.match(r"^predictions_dir\s*:", line):
-            lines[i] = f"predictions_dir: {new}\n"
-            break
-    else:
-        lines.append(f"predictions_dir: {new}\n")
+    _rewrite_config_line(lines, "predictions_dir", new)
     config_path.write_text("".join(lines))
+
+
+def set_waypoint_offset(config_path: Path, north_m: float, east_m: float) -> None:
+    """Rewrite the waypoint offset lines, preserving all comments."""
+    lines = config_path.read_text().splitlines(keepends=True)
+    _rewrite_config_line(lines, "waypoint_offset_north_m", north_m)
+    _rewrite_config_line(lines, "waypoint_offset_east_m", east_m)
+    config_path.write_text("".join(lines))
+
+
+def waypoint_offset(config: dict) -> dict:
+    """Current offset, tolerant of a missing/non-numeric config value."""
+
+    def _float(value):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    return {
+        "north_m": _float(config.get("waypoint_offset_north_m", 0.0)),
+        "east_m": _float(config.get("waypoint_offset_east_m", 0.0)),
+    }
 
 
 # ── Passkey + audit ─────────────────────────────────────────────────
@@ -278,6 +306,17 @@ GLIDER_HTML = """<!doctype html>
 <p class="muted">Target changes {{ 'apply at the next surfacing (live reload
 is on).' if hot_reload else 'need a service restart (set config_file: in the
 YAML to enable live reload).' }}</p>
+<form class="control" method="post"
+      action="{{ url_for('offset_action', name=name) }}">
+  offset north <input type="number" step="any" name="north_m" value="{{ offset.north_m }}"> m,
+  east <input type="number" step="any" name="east_m" value="{{ offset.east_m }}"> m
+  <button>Set offset</button>
+  passkey <input type="password" name="passkey" required>
+</form>
+<p class="muted">Negative values are south / west. Offset changes
+{{ 'apply at the next surfacing (live reload is on).' if hot_reload else
+'need a service restart (set config_file: in the YAML to enable live
+reload).' }}</p>
 {% endif %}
 
 <h2>Prediction</h2>
@@ -286,6 +325,8 @@ YAML to enable live reload).' }}</p>
   In force: {{ pred.current }} ({{ '%.1f' % pred.age_h }} h old{{ ', STALE' if pred.stale }})
 {% else %}No usable prediction file{% endif %}
 — {{ pred.count }} file(s) in {{ pred.dir }}, {{ pred.future }} future-dated.</p>
+<p>Waypoint offset: <b>{{ '%+.0f' % offset.north_m }} m north, {{ '%+.0f' % offset.east_m }} m east</b>
+of the predicted target (negative = south / west).</p>
 
 {% if tracks_plot_mtime %}
 <h3>Compare tracking methods</h3>
@@ -386,6 +427,7 @@ def create_app(base_dir: str | Path) -> Flask:
             targets=target_options(base, config),
             hot_reload=bool(config.get("config_file")),
             pred=pred,
+            offset=waypoint_offset(config),
             config_rows=config_rows,
             plot_mtime=int(plot.stat().st_mtime) if plot else None,
             tracks_plot_mtime=int(tplot.stat().st_mtime) if tplot else None,
@@ -446,6 +488,35 @@ def create_app(base_dir: str | Path) -> Flask:
         )
         return redirect(
             url_for("glider_page", name=name, msg=f"target set to {new} ({applies})")
+        )
+
+    @app.post("/glider/<name>/offset")
+    def offset_action(name):
+        _known(name)
+        try:
+            north_m = float(request.form.get("north_m", ""))
+            east_m = float(request.form.get("east_m", ""))
+        except ValueError:
+            abort(400)
+        _gate(name, f"OFFSET north={north_m:g} east={east_m:g}")
+        config = load_config(base, name)
+        set_waypoint_offset(base / f"{name}_config.yaml", north_m, east_m)
+        audit(
+            base,
+            request.remote_addr or "?",
+            f"OFFSET {name} -> north={north_m:g} east={east_m:g} ok",
+        )
+        applies = (
+            "applies at the next surfacing"
+            if config.get("config_file")
+            else "restart the service to apply"
+        )
+        return redirect(
+            url_for(
+                "glider_page",
+                name=name,
+                msg=f"offset set to {north_m:g} m north, {east_m:g} m east ({applies})",
+            )
         )
 
     return app

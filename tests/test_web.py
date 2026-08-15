@@ -101,6 +101,53 @@ def test_target_options_and_rewrite_preserves_comments(base):
     assert "config_file: osusim_config.yaml" in text
 
 
+# ── Waypoint offset ───────────────────────────────────────────────
+
+
+def test_glider_page_shows_waypoint_offset_default(client):
+    page = client.get("/glider/osusim").get_data(as_text=True)
+    assert "+0 m north, +0 m east" in page
+
+
+def test_waypoint_offset_rewrite_preserves_comments(base):
+    cfg_path = base / "osusim_config.yaml"
+    web.set_waypoint_offset(cfg_path, 250.0, -100.0)
+    text = cfg_path.read_text()
+    assert "# comment to preserve" in text
+    assert "waypoint_offset_north_m: 250.0" in text
+    assert "waypoint_offset_east_m: -100.0" in text
+
+
+def test_offset_change_denied_without_passkey_env(base, client, monkeypatch):
+    monkeypatch.delenv("AUTOPILOT_WEB_PASSKEY", raising=False)
+    r = client.post(
+        "/glider/osusim/offset", data={"north_m": "10", "east_m": "10", "passkey": "x"}
+    )
+    assert r.status_code == 403
+
+
+def test_offset_change_requires_valid_numbers(base, client, monkeypatch):
+    monkeypatch.setenv("AUTOPILOT_WEB_PASSKEY", "sekrit")
+    r = client.post(
+        "/glider/osusim/offset",
+        data={"north_m": "not-a-number", "east_m": "0", "passkey": "sekrit"},
+    )
+    assert r.status_code == 400
+
+
+def test_offset_change_writes_config_and_audits(base, client, monkeypatch):
+    monkeypatch.setenv("AUTOPILOT_WEB_PASSKEY", "sekrit")
+    r = client.post(
+        "/glider/osusim/offset",
+        data={"north_m": "250", "east_m": "-100", "passkey": "sekrit"},
+    )
+    assert r.status_code == 302
+    text = (base / "osusim_config.yaml").read_text()
+    assert "waypoint_offset_north_m: 250.0" in text
+    assert "waypoint_offset_east_m: -100.0" in text
+    assert "OFFSET osusim -> north=250 east=-100 ok" in (base / "audit.log").read_text()
+
+
 # ── Passkey gate ────────────────────────────────────────────────
 
 
