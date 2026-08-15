@@ -240,6 +240,22 @@ def test_build_kmz_folder_structure_and_recency_marker():
     assert "ekf forecast" in xml
 
 
+def test_build_kmz_markers_hide_permanent_label():
+    """Placemark names must still work as the info-balloon title on
+    click, but not as a permanent text label cluttering the map --
+    every icon-bearing style needs LabelStyle scale 0."""
+    import re
+
+    tracks = read_tracks(FIXTURE)
+    xml = build_kmz(tracks).kml()
+
+    icon_styles = re.findall(r"<Style[^>]*>.*?</Style>", xml, re.S)
+    assert icon_styles  # sanity: the fixture actually produced markers
+    for style in icon_styles:
+        if "<IconStyle" in style:
+            assert "<LabelStyle" in style and "<scale>0</scale>" in style
+
+
 def test_build_kmz_track_style_sets_normal_and_highlight():
     """A gx:Track's StyleMap left with only normalstyle set makes
     Google Earth fall back to its default pushpin for the highlight

@@ -328,7 +328,9 @@ DEFAULT_KML_TRACKERS = ("ekf", "ops", "pf_lag2h")
 def _style_track(
     track, rgb: tuple[int, int, int], width: float, alpha: int, icon_scale: float
 ) -> None:
-    """Thin line + small circle icon (shown as the gx:Track scrubs).
+    """Thin line + small circle icon (shown as the gx:Track scrubs), name
+    hidden as a permanent map label (labelstyle scale 0) -- it still
+    shows as the info-balloon title on click.
 
     A gx:Track's style is a StyleMap (normal/highlight pair), and
     Google Earth falls back to its default yellow pushpin for whichever
@@ -343,6 +345,18 @@ def _style_track(
         style.iconstyle.icon.href = _CIRCLE_ICON
         style.iconstyle.scale = icon_scale
         style.iconstyle.color = color
+        style.labelstyle.scale = 0
+
+
+def _style_point(
+    pnt, rgb: tuple[int, int, int], scale: float, alpha: int = 255
+) -> None:
+    """Small circle icon for a plain Placemark; name shows only as the
+    info-balloon title on click, not as a permanent map label."""
+    pnt.style.iconstyle.icon.href = _CIRCLE_ICON
+    pnt.style.iconstyle.scale = scale
+    pnt.style.iconstyle.color = simplekml.Color.rgb(*rgb, alpha)
+    pnt.style.labelstyle.scale = 0
 
 
 def build_kmz(
@@ -441,9 +455,7 @@ def build_kmz(
                     pnt = tracker_folder.newpoint(
                         name=f"{tracker} (most recent)", coords=[(last_lon, last_lat)]
                     )
-                    pnt.style.iconstyle.icon.href = _CIRCLE_ICON
-                    pnt.style.iconstyle.scale = 0.9
-                    pnt.style.iconstyle.color = simplekml.Color.rgb(*rgb)
+                    _style_point(pnt, rgb, scale=0.9)
                     last_utc = last_t.astimezone(UTC)
                     pnt.timestamp.when = last_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
                     pnt.description = (
@@ -464,9 +476,7 @@ def build_kmz(
                     pnt = tracker_folder.newpoint(
                         name=f"{tracker} {label}", coords=[(lon, lat)]
                     )
-                    pnt.style.iconstyle.icon.href = _CIRCLE_ICON
-                    pnt.style.iconstyle.scale = 0.35
-                    pnt.style.iconstyle.color = simplekml.Color.rgb(*rgb, 180)
+                    _style_point(pnt, rgb, scale=0.35, alpha=180)
                     pnt.timestamp.when = t_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
                     desc = [
                         f"Asset: {float_id}",
