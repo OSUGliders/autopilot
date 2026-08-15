@@ -458,6 +458,56 @@ def test_announce_arrival_fires_even_when_content_unreadable(input_dir, monkeypa
     assert sent[0][0] == "osu685: file received"
 
 
+def test_announce_arrival_not_repeated_while_file_stays_unreadable(
+    input_dir, monkeypatch
+):
+    """An unreadable file is retried every scan without being marked
+    processed -- its arrival post must not repeat with it (missing-.cac
+    spells historically lasted hours; at a 10 s poll that was one Slack
+    message every 10 seconds). Once readable, content still follows."""
+    shutil.copy(REAL_TBD, input_dir / "osu685-2026-172-0-324.tbd")
+    monkeypatch.setattr(watch, "check_variable", lambda *a, **k: None)
+    sent: list[tuple[str, str]] = []
+    state: dict = {}
+    announced: set[str] = set()  # persistent across scans, as in main()
+
+    def scan():
+        watch.scan_once(
+            input_dir,
+            FIXTURES,
+            "sci_generic_a",
+            {},
+            state,
+            "osu685",
+            watch.dinkum_name_re("tbd"),
+            2,
+            send=lambda subject, body: sent.append((subject, body)),
+            announce=True,
+            announced=announced,
+        )
+
+    scan()
+    scan()
+    scan()
+    assert [subject for subject, _ in sent] == ["osu685: file received"]
+
+    # The .cac shows up; the retried file now reads fine -- content is
+    # announced (once), arrival is not re-announced.
+    monkeypatch.setattr(
+        watch,
+        "check_variable",
+        lambda *a, **k: watch.CheckResult(
+            count=2, duration_minutes=None, rate_per_minute=None, ok=True
+        ),
+    )
+    scan()
+    assert [subject for subject, _ in sent] == [
+        "osu685: file received",
+        "osu685: osu685-2026-172-0-324.tbd",
+    ]
+    assert state["osu685"].processed == {"osu685-2026-172-0-324.tbd"}
+
+
 def test_announce_survives_slack_failure(input_dir, monkeypatch):
     shutil.copy(REAL_TBD, input_dir / "osu685-2026-172-0-324.tbd")
     monkeypatch.setattr(

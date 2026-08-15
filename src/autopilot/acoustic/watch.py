@@ -277,6 +277,7 @@ def scan_once(
     announce: bool = False,
     announce_min_bytes: int = 0,
     min_bytes: int = 0,
+    announced: set[str] | None = None,
 ) -> None:
     """Check every not-yet-processed matching file in *input_dir*.
 
@@ -298,7 +299,18 @@ def scan_once(
     *announce_min_bytes* additionally trims routine Slack noise (only)
     among files that still get checked; unlike *min_bytes* it has no
     effect on the alert streak.
+
+    *announced* is the caller-owned set of filenames whose arrival has
+    already been posted. It exists because an unreadable file (e.g.
+    missing .cac) is deliberately retried every scan without being
+    marked processed -- without this memory, its arrival post would
+    repeat every poll interval for as long as the file stays
+    unreadable. Pass the same set across scans; in-process only is
+    fine (one repeat after a service restart is harmless, a message
+    every 10 seconds is not).
     """
+    if announced is None:
+        announced = set()
     already = glider_ledger.get(glider)
     seen = already.processed if already else frozenset()
     for path in sorted(input_dir.iterdir()):
@@ -315,7 +327,8 @@ def scan_once(
             )
             continue
         worth_announcing = announce and send and size >= announce_min_bytes
-        if worth_announcing:
+        if worth_announcing and path.name not in announced:
+            announced.add(path.name)
             _announce_arrival(send, glider, path, size)
         result = check_variable(path, cache_dir, variable, **check_kwargs)
         if result is None:
@@ -457,6 +470,7 @@ def main() -> None:
         args.variable,
         args.threshold,
     )
+    announced: set[str] = set()
     while True:
         try:
             scan_once(
@@ -472,6 +486,7 @@ def main() -> None:
                 args.announce,
                 args.announce_min_bytes,
                 args.min_bytes,
+                announced,
             )
             ledger_mod.save(ledger_path, glider_ledger)
         except Exception:
