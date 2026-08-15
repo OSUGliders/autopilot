@@ -133,14 +133,14 @@ def _notify(
     try:
         if transition == "alert":
             send(
-                f"{glider}: no data received in over {max_gap_minutes:.0f} min",
+                f"🚨 {glider}: no data received in over {max_gap_minutes:.0f} min",
                 f"Newest matching file is {primary_age_minutes:.0f} min old, but the "
                 "corroborating file type is still arriving on schedule -- the glider "
                 "is calling in normally, so this isn't explained by a missed surfacing.",
             )
         else:
             send(
-                f"{glider}: data resumed",
+                f"✅ {glider}: data resumed",
                 "A new file has arrived; staleness alert cleared.",
             )
     except Exception:

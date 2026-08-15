@@ -32,12 +32,11 @@ legitimate "quiet period" left to tolerate -- any real-sized file that
 still fails is a real problem, which is why ``--threshold 1`` (alert
 immediately) is the right choice once this filter is in place.
 
-``--announce`` additionally posts two routine (non-alert) Slack
-messages per checked file, in sequence: arrival ("file received, N
-bytes") as soon as it's seen, then content ("sci_generic_k == 10: N
-time(s) over M min (expected >= E)") once read. Off by default --
-useful while watching a check settle in, easy to skip on an
-already-trusted one.
+``--announce`` additionally posts one routine (non-alert) Slack message
+per checked file ("1313 bytes -- sci_generic_k == 10: N time(s) over M
+min (expected >= E)"), prefixed with 🚨 when that file fails
+the check. Off by default -- useful while watching a check settle in,
+easy to skip on an already-trusted one.
 
 This never touches the SFMC API, STOMP, or the network for file
 retrieval — it only watches a local directory and reads files with
@@ -216,13 +215,13 @@ def _notify(
     try:
         if transition == "alert":
             send(
-                f"{glider}: data check failing",
+                f"🚨 {glider}: data check failing",
                 f"Below the configured threshold for {streak} consecutive "
                 f"file(s), most recently `{filename}`.",
             )
         else:
             send(
-                f"{glider}: data check recovered",
+                f"✅ {glider}: data check recovered",
                 f"`{filename}` is back above threshold.",
             )
     except Exception:
@@ -233,33 +232,30 @@ def _notify(
         logger.exception("Slack delivery failed for %s (%s)", glider, transition)
 
 
-def _announce_arrival(send: SendFn, glider: str, path: Path, size: int) -> None:
-    """Routine "a new file showed up in the mirror" post.
-
-    Fires as soon as the file is seen locally -- this component only
-    watches a directory (see the module docstring), so it cannot
-    honestly claim to have detected the zmodem transfer itself, only
-    that a new mirrored copy has appeared. Independent of whether the
-    file can actually be decoded (no cache-file dependency), so it
-    still fires even when the content check below can't run.
-    """
-    try:
-        send(f"{glider}: file received", f"`{path.name}` {size} bytes")
-    except Exception:
-        logger.exception("Slack arrival announcement failed for %s", path.name)
-
-
 def _announce_content(
     send: SendFn,
     glider: str,
     path: Path,
+    size: int,
     variable: str,
     equals: float | None,
     result: CheckResult,
 ) -> None:
+    """Routine "here's what this file contained" post -- file size
+    folded in rather than a separate arrival message (a plain arrival
+    notice carried no signal of its own once this exists), and prefixed
+    with an alarm emoji when the file itself fails the check, so a
+    failure stands out at a glance in a busy channel even before the
+    real alert/recovery transition (which needs --threshold consecutive
+    failures) fires.
+    """
     label = f"{variable} == {equals:g}" if equals is not None else variable
+    prefix = "🚨 " if not result.ok else ""
     try:
-        send(f"{glider}: {path.name}", f"{label}: {result.announce_text()}")
+        send(
+            f"{prefix}{glider}: {path.name}",
+            f"{size} bytes -- {label}: {result.announce_text()}",
+        )
     except Exception:
         logger.exception("Slack content announcement failed for %s", path.name)
 
@@ -277,7 +273,6 @@ def scan_once(
     announce: bool = False,
     announce_min_bytes: int = 0,
     min_bytes: int = 0,
-    announced: set[str] | None = None,
 ) -> None:
     """Check every not-yet-processed matching file in *input_dir*.
 
@@ -290,27 +285,18 @@ def scan_once(
     not for tolerating routine failures. Any file that clears this bar
     and still fails the check is a real problem, not noise.
 
-    When *announce* is set (and *send* is configured), two routine
-    Slack posts go out per remaining new file, in sequence: arrival
-    (size, as soon as the file is seen) and then content (count/rate,
-    once read). These are independent of the alert/recovery mechanism
-    below -- routine visibility into what's arriving, not a health
-    signal -- so they fire on every checked file, healthy or not.
-    *announce_min_bytes* additionally trims routine Slack noise (only)
-    among files that still get checked; unlike *min_bytes* it has no
-    effect on the alert streak.
-
-    *announced* is the caller-owned set of filenames whose arrival has
-    already been posted. It exists because an unreadable file (e.g.
-    missing .cac) is deliberately retried every scan without being
-    marked processed -- without this memory, its arrival post would
-    repeat every poll interval for as long as the file stays
-    unreadable. Pass the same set across scans; in-process only is
-    fine (one repeat after a service restart is harmless, a message
-    every 10 seconds is not).
+    When *announce* is set (and *send* is configured), one routine
+    Slack post goes out per file that's actually read (size folded in,
+    not a separate arrival message -- a file that never becomes
+    readable, e.g. missing .cac, never gets one, so there's no repeat-
+    message risk to guard against). Independent of the alert/recovery
+    mechanism below -- routine visibility into what's arriving, not a
+    health signal by itself -- so it fires on every checked file,
+    healthy or not, though it's visually flagged when the file fails
+    (see ``_announce_content``). *announce_min_bytes* additionally
+    trims routine Slack noise (only) among files that still get
+    checked; unlike *min_bytes* it has no effect on the alert streak.
     """
-    if announced is None:
-        announced = set()
     already = glider_ledger.get(glider)
     seen = already.processed if already else frozenset()
     for path in sorted(input_dir.iterdir()):
@@ -326,16 +312,12 @@ def scan_once(
                 min_bytes,
             )
             continue
-        worth_announcing = announce and send and size >= announce_min_bytes
-        if worth_announcing and path.name not in announced:
-            announced.add(path.name)
-            _announce_arrival(send, glider, path, size)
         result = check_variable(path, cache_dir, variable, **check_kwargs)
         if result is None:
             continue  # unreadable; retried next scan, not counted either way
-        if worth_announcing:
+        if announce and send and size >= announce_min_bytes:
             _announce_content(
-                send, glider, path, variable, check_kwargs.get("equals"), result
+                send, glider, path, size, variable, check_kwargs.get("equals"), result
             )
         transition = ledger_mod.record(
             glider_ledger, glider, path.name, result.ok, threshold
@@ -478,7 +460,6 @@ def main() -> None:
         args.variable,
         args.threshold,
     )
-    announced: set[str] = set()
     while True:
         try:
             scan_once(
@@ -494,7 +475,6 @@ def main() -> None:
                 args.announce,
                 args.announce_min_bytes,
                 args.min_bytes,
-                announced,
             )
             ledger_mod.save(ledger_path, glider_ledger)
         except Exception:

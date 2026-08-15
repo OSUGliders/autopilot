@@ -393,7 +393,7 @@ def test_announce_off_by_default_sends_no_routine_messages(input_dir, monkeypatc
     assert sent == []  # no alert/recovery transition either -> nothing sent
 
 
-def test_announce_sends_arrival_then_content_in_order(input_dir, monkeypatch):
+def test_announce_sends_one_combined_message(input_dir, monkeypatch):
     shutil.copy(REAL_TBD, input_dir / "osu685-2026-172-0-324.tbd")
     monkeypatch.setattr(
         watch,
@@ -421,24 +421,26 @@ def test_announce_sends_arrival_then_content_in_order(input_dir, monkeypatch):
         announce=True,
     )
 
-    assert len(sent) == 2
-    arrival_subject, arrival_body = sent[0]
-    assert arrival_subject == "osu685: file received"
-    assert "osu685-2026-172-0-324.tbd" in arrival_body
-    assert "1313 bytes" in arrival_body  # the fixture's real size
-
-    content_subject, content_body = sent[1]
-    assert content_subject == "osu685: osu685-2026-172-0-324.tbd"
-    assert "sci_generic_a == 20628" in content_body
-    assert "2 occurrences" in content_body
-    assert "expected >= 1.0" in content_body
+    assert len(sent) == 1  # size folded into the one content message, no arrival post
+    subject, body = sent[0]
+    assert (
+        subject == "osu685: osu685-2026-172-0-324.tbd"
+    )  # no failure -> no emoji prefix
+    assert "1313 bytes" in body  # the fixture's real size
+    assert "sci_generic_a == 20628" in body
+    assert "2 occurrences" in body
+    assert "expected >= 1.0" in body
 
 
-def test_announce_arrival_fires_even_when_content_unreadable(input_dir, monkeypatch):
-    """Arrival has no cache-file dependency, so it must still fire even
-    when the content check can't run (e.g. missing .cac)."""
+def test_announce_prefixes_failing_file_with_alarm_emoji(input_dir, monkeypatch):
     shutil.copy(REAL_TBD, input_dir / "osu685-2026-172-0-324.tbd")
-    monkeypatch.setattr(watch, "check_variable", lambda *a, **k: None)
+    monkeypatch.setattr(
+        watch,
+        "check_variable",
+        lambda *a, **k: watch.CheckResult(
+            count=0, duration_minutes=None, rate_per_minute=None, ok=False
+        ),
+    )
     sent: list[tuple[str, str]] = []
 
     watch.scan_once(
@@ -454,22 +456,18 @@ def test_announce_arrival_fires_even_when_content_unreadable(input_dir, monkeypa
         announce=True,
     )
 
-    assert len(sent) == 1
-    assert sent[0][0] == "osu685: file received"
+    assert sent[0][0] == "🚨 osu685: osu685-2026-172-0-324.tbd"
 
 
-def test_announce_arrival_not_repeated_while_file_stays_unreadable(
-    input_dir, monkeypatch
-):
-    """An unreadable file is retried every scan without being marked
-    processed -- its arrival post must not repeat with it (missing-.cac
-    spells historically lasted hours; at a 10 s poll that was one Slack
-    message every 10 seconds). Once readable, content still follows."""
+def test_announce_silent_while_file_stays_unreadable(input_dir, monkeypatch):
+    """No arrival message exists to fire independently of the content
+    check, so an unreadable file (e.g. missing .cac) produces nothing,
+    no matter how many scans retry it -- unlike a repeat-arrival-spam
+    risk, there's no separate signal to guard against here."""
     shutil.copy(REAL_TBD, input_dir / "osu685-2026-172-0-324.tbd")
     monkeypatch.setattr(watch, "check_variable", lambda *a, **k: None)
     sent: list[tuple[str, str]] = []
     state: dict = {}
-    announced: set[str] = set()  # persistent across scans, as in main()
 
     def scan():
         watch.scan_once(
@@ -483,16 +481,15 @@ def test_announce_arrival_not_repeated_while_file_stays_unreadable(
             2,
             send=lambda subject, body: sent.append((subject, body)),
             announce=True,
-            announced=announced,
         )
 
     scan()
     scan()
     scan()
-    assert [subject for subject, _ in sent] == ["osu685: file received"]
+    assert sent == []
 
-    # The .cac shows up; the retried file now reads fine -- content is
-    # announced (once), arrival is not re-announced.
+    # The .cac shows up; the retried file now reads fine -- exactly one
+    # combined message follows.
     monkeypatch.setattr(
         watch,
         "check_variable",
@@ -501,10 +498,7 @@ def test_announce_arrival_not_repeated_while_file_stays_unreadable(
         ),
     )
     scan()
-    assert [subject for subject, _ in sent] == [
-        "osu685: file received",
-        "osu685: osu685-2026-172-0-324.tbd",
-    ]
+    assert [subject for subject, _ in sent] == ["osu685: osu685-2026-172-0-324.tbd"]
     assert state["osu685"].processed == {"osu685-2026-172-0-324.tbd"}
 
 
@@ -599,7 +593,7 @@ def test_announce_min_bytes_allows_large_files(input_dir, monkeypatch):
         announce_min_bytes=size,  # exactly this file's size -- inclusive
     )
 
-    assert len(sent) == 2
+    assert len(sent) == 1
 
 
 # ── scan_once: --min-bytes exempts small files entirely ──────────
