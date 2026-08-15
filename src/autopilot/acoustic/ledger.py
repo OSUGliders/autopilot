@@ -1,13 +1,20 @@
 """Small persisted per-glider state for the acoustic-data watcher.
 
-Tracks which science files have already been checked, so a restart
-does not re-alert on old files, and a short run of consecutive
-"no data" results per glider, so one quiet segment does not trigger an
-alert — only a *run* of them does (a single empty sci_generic slot is
-routine; the earlier design discussion established that transfer size
-alone can't distinguish "nothing to report" from "something went
-wrong," and neither can one empty file).  A transition back to a
-file with data sends one recovery message.
+Tracks which science files have already been checked, and a run of
+consecutive "no data" results per glider so ``record`` can fire an
+alert once that run reaches the caller's configured ``threshold``.
+Whether that should be 1 (alert on the very first bad file) or higher
+is a real operational question, not something this module decides:
+for osu1267, transfer size *does* reliably separate "nothing to
+report" (small administrative surface segments) from "something went
+wrong" (a real-sized file with no data), so those small files are
+filtered out by the caller entirely (see ``mark_processed`` and
+``watch.py``'s ``--min-bytes``) and any real file that fails is a
+genuine problem worth an immediate alert, not routine noise -- there
+turned out to be no such thing as a legitimate quiet period once size
+filtering is in place; the "lulls" seen in real history were failures
+pilots had been catching by hand. A transition back to a file with
+data sends one recovery message.
 
 Pure functions over a plain dict, no I/O beyond the explicit load/save
 calls, so the alerting logic is testable without touching a real
@@ -71,6 +78,17 @@ def save(path: Path, ledger: dict[str, GliderLedger]) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, indent=1))
     tmp.replace(path)
+
+
+def mark_processed(ledger: dict[str, GliderLedger], glider: str, filename: str) -> None:
+    """Record *filename* as seen without affecting the alert streak.
+
+    For files exempted from the check entirely (e.g. too small to ever
+    carry real content) -- unlike ``record``, this must never touch
+    ``consecutive_empty``/``in_alert``, since an exempted file says
+    nothing about whether real data is flowing.
+    """
+    ledger.setdefault(glider, GliderLedger()).processed.add(filename)
 
 
 def record(

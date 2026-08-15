@@ -90,6 +90,24 @@ def test_rate_threshold_above_fails():
     assert not result.ok
 
 
+def test_rate_threshold_sets_expected_count():
+    result = watch.check_variable(
+        REAL_TBD,
+        FIXTURES,
+        "sci_generic_a",
+        duration_variable="sci_m_present_time",
+        min_rate_per_minute=0.1,
+    )
+    assert result.expected_count == pytest.approx(0.1 * result.duration_minutes)
+    assert "expected >= 1.0" in result.announce_text()
+
+
+def test_no_rate_threshold_leaves_expected_count_none():
+    result = watch.check_variable(REAL_TBD, FIXTURES, "sci_generic_a")
+    assert result.expected_count is None
+    assert result.announce_text() == "2 time(s)"
+
+
 def test_missing_duration_variable_falls_back_to_min_count():
     result = watch.check_variable(
         REAL_TBD,
@@ -343,3 +361,259 @@ def test_scan_slack_failure_does_not_raise(input_dir, monkeypatch):
     )
 
     assert state["osu685"].in_alert  # ledger transition still recorded
+
+
+# ── scan_once: --announce routine messages ───────────────────────
+
+
+def test_announce_off_by_default_sends_no_routine_messages(input_dir, monkeypatch):
+    shutil.copy(REAL_TBD, input_dir / "osu685-2026-172-0-324.tbd")
+    monkeypatch.setattr(
+        watch,
+        "check_variable",
+        lambda *a, **k: watch.CheckResult(
+            count=1, duration_minutes=None, rate_per_minute=None, ok=True
+        ),
+    )
+    sent: list[tuple[str, str]] = []
+
+    watch.scan_once(
+        input_dir,
+        FIXTURES,
+        "sci_generic_a",
+        {},
+        {},
+        "osu685",
+        watch.dinkum_name_re("tbd"),
+        2,
+        send=lambda subject, body: sent.append((subject, body)),
+        # announce defaults to False
+    )
+
+    assert sent == []  # no alert/recovery transition either -> nothing sent
+
+
+def test_announce_sends_arrival_then_content_in_order(input_dir, monkeypatch):
+    shutil.copy(REAL_TBD, input_dir / "osu685-2026-172-0-324.tbd")
+    monkeypatch.setattr(
+        watch,
+        "check_variable",
+        lambda *a, **k: watch.CheckResult(
+            count=2,
+            duration_minutes=10.1,
+            rate_per_minute=0.2,
+            ok=True,
+            expected_count=1.0,
+        ),
+    )
+    sent: list[tuple[str, str]] = []
+
+    watch.scan_once(
+        input_dir,
+        FIXTURES,
+        "sci_generic_a",
+        {"equals": 20628.0},
+        {},
+        "osu685",
+        watch.dinkum_name_re("tbd"),
+        2,
+        send=lambda subject, body: sent.append((subject, body)),
+        announce=True,
+    )
+
+    assert len(sent) == 2
+    arrival_subject, arrival_body = sent[0]
+    assert arrival_subject == "osu685: file received"
+    assert "osu685-2026-172-0-324.tbd" in arrival_body
+    assert "byte(s)" in arrival_body
+
+    content_subject, content_body = sent[1]
+    assert content_subject == "osu685: osu685-2026-172-0-324.tbd"
+    assert "sci_generic_a == 20628" in content_body
+    assert "2 time(s)" in content_body
+    assert "expected >= 1.0" in content_body
+
+
+def test_announce_arrival_fires_even_when_content_unreadable(input_dir, monkeypatch):
+    """Arrival has no cache-file dependency, so it must still fire even
+    when the content check can't run (e.g. missing .cac)."""
+    shutil.copy(REAL_TBD, input_dir / "osu685-2026-172-0-324.tbd")
+    monkeypatch.setattr(watch, "check_variable", lambda *a, **k: None)
+    sent: list[tuple[str, str]] = []
+
+    watch.scan_once(
+        input_dir,
+        FIXTURES,
+        "sci_generic_a",
+        {},
+        {},
+        "osu685",
+        watch.dinkum_name_re("tbd"),
+        2,
+        send=lambda subject, body: sent.append((subject, body)),
+        announce=True,
+    )
+
+    assert len(sent) == 1
+    assert sent[0][0] == "osu685: file received"
+
+
+def test_announce_survives_slack_failure(input_dir, monkeypatch):
+    shutil.copy(REAL_TBD, input_dir / "osu685-2026-172-0-324.tbd")
+    monkeypatch.setattr(
+        watch,
+        "check_variable",
+        lambda *a, **k: watch.CheckResult(
+            count=1, duration_minutes=None, rate_per_minute=None, ok=True
+        ),
+    )
+
+    def broken_send(subject, body):
+        raise RuntimeError("webhook down")
+
+    state: dict = {}
+    watch.scan_once(
+        input_dir,
+        FIXTURES,
+        "sci_generic_a",
+        {},
+        state,
+        "osu685",
+        watch.dinkum_name_re("tbd"),
+        2,
+        send=broken_send,
+        announce=True,
+    )  # must not raise
+
+    assert state["osu685"].processed == {"osu685-2026-172-0-324.tbd"}
+
+
+def test_announce_min_bytes_skips_small_files(input_dir, monkeypatch):
+    """A small file must still be fully checked and ledgered -- only
+    the routine Slack posts are suppressed."""
+    small = input_dir / "osu685-2026-172-0-324.tbd"
+    shutil.copy(REAL_TBD, small)
+    size = small.stat().st_size
+    monkeypatch.setattr(
+        watch,
+        "check_variable",
+        lambda *a, **k: watch.CheckResult(
+            count=0, duration_minutes=None, rate_per_minute=None, ok=True
+        ),
+    )
+    sent: list[tuple[str, str]] = []
+    state: dict = {}
+
+    watch.scan_once(
+        input_dir,
+        FIXTURES,
+        "sci_generic_a",
+        {},
+        state,
+        "osu685",
+        watch.dinkum_name_re("tbd"),
+        2,
+        send=lambda subject, body: sent.append((subject, body)),
+        announce=True,
+        announce_min_bytes=size + 1,  # just above this file's real size
+    )
+
+    assert sent == []  # too small to announce
+    assert state["osu685"].processed == {"osu685-2026-172-0-324.tbd"}  # still checked
+
+
+def test_announce_min_bytes_allows_large_files(input_dir, monkeypatch):
+    large = input_dir / "osu685-2026-172-0-324.tbd"
+    shutil.copy(REAL_TBD, large)
+    size = large.stat().st_size
+    monkeypatch.setattr(
+        watch,
+        "check_variable",
+        lambda *a, **k: watch.CheckResult(
+            count=1, duration_minutes=None, rate_per_minute=None, ok=True
+        ),
+    )
+    sent: list[tuple[str, str]] = []
+
+    watch.scan_once(
+        input_dir,
+        FIXTURES,
+        "sci_generic_a",
+        {},
+        {},
+        "osu685",
+        watch.dinkum_name_re("tbd"),
+        2,
+        send=lambda subject, body: sent.append((subject, body)),
+        announce=True,
+        announce_min_bytes=size,  # exactly this file's size -- inclusive
+    )
+
+    assert len(sent) == 2
+
+
+# ── scan_once: --min-bytes exempts small files entirely ──────────
+
+
+def test_min_bytes_exempts_small_file_from_check_and_streak(input_dir, monkeypatch):
+    small = input_dir / "osu685-2026-172-0-324.tbd"
+    shutil.copy(REAL_TBD, small)
+    size = small.stat().st_size
+    monkeypatch.setattr(
+        watch, "check_variable", lambda *a, **k: pytest.fail("should not run")
+    )
+    sent: list[tuple[str, str]] = []
+    state: dict = {}
+
+    watch.scan_once(
+        input_dir,
+        FIXTURES,
+        "sci_generic_a",
+        {},
+        state,
+        "osu685",
+        watch.dinkum_name_re("tbd"),
+        1,  # minimum threshold -- would alert immediately if this counted
+        send=lambda subject, body: sent.append((subject, body)),
+        announce=True,
+        min_bytes=size + 1,
+    )
+
+    assert sent == []
+    assert state["osu685"].processed == {
+        "osu685-2026-172-0-324.tbd"
+    }  # skipped, not retried
+    assert state["osu685"].consecutive_empty == 0  # exempted, not a failure
+    assert not state["osu685"].in_alert
+
+
+def test_min_bytes_allows_large_files_and_alerts_immediately(input_dir, monkeypatch):
+    large = input_dir / "osu685-2026-172-0-324.tbd"
+    shutil.copy(REAL_TBD, large)
+    size = large.stat().st_size
+    monkeypatch.setattr(
+        watch,
+        "check_variable",
+        lambda *a, **k: watch.CheckResult(
+            count=0, duration_minutes=None, rate_per_minute=None, ok=False
+        ),
+    )
+    sent: list[tuple[str, str]] = []
+    state: dict = {}
+
+    watch.scan_once(
+        input_dir,
+        FIXTURES,
+        "sci_generic_a",
+        {},
+        state,
+        "osu685",
+        watch.dinkum_name_re("tbd"),
+        1,  # minimum threshold, as recommended once size-filtering is in place
+        send=lambda subject, body: sent.append((subject, body)),
+        min_bytes=size,  # exactly this file's size -- inclusive, so it's checked
+    )
+
+    assert state["osu685"].in_alert
+    assert len(sent) == 1
+    assert "failing" in sent[0][0]

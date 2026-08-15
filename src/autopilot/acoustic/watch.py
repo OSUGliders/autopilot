@@ -1,6 +1,7 @@
 """Watch a local mirror of a glider's from-glider files for newly
 arrived data, and alert over Slack if a configured variable falls
-below an expected count or rate for several files in a row.
+below an expected count or rate for ``--threshold`` files in a row
+(``--threshold 1``: alert on the very first bad file).
 
 General across file type (``.tbd`` science files, ``.sbd`` flight
 files — same Slocum binary format either way, dbdreader doesn't care)
@@ -18,6 +19,25 @@ and across what "healthy" means for a given variable:
   the file actually spans), so a second, densely-sampled variable
   (``m_present_time``/``sci_m_present_time``) supplies the file's
   actual duration.
+
+``--min-bytes`` fully exempts files smaller than this from the check
+entirely (not read, not counted toward the alert streak, not
+announced) -- for real, identifiable no-content files (e.g. small
+administrative segments logged while a glider idles at the surface),
+never for tolerating routine failures. Real per-glider file sizes
+tend to split cleanly enough to find this boundary (see the deploy
+unit for how it was picked for osu1267). Once genuinely-empty small
+files are filtered out this way, there's no such thing as a
+legitimate "quiet period" left to tolerate -- any real-sized file that
+still fails is a real problem, which is why ``--threshold 1`` (alert
+immediately) is the right choice once this filter is in place.
+
+``--announce`` additionally posts two routine (non-alert) Slack
+messages per checked file, in sequence: arrival ("file received, N
+bytes") as soon as it's seen, then content ("sci_generic_k == 10: N
+time(s) over M min (expected >= E)") once read. Off by default --
+useful while watching a check settle in, easy to skip on an
+already-trusted one.
 
 This never touches the SFMC API, STOMP, or the network for file
 retrieval — it only watches a local directory and reads files with
@@ -94,18 +114,33 @@ class CheckResult:
     ``rate_per_minute`` is ``None`` whenever ``duration_variable``
     wasn't configured, or the file didn't have at least two samples of
     it to establish a span — callers fall back to ``min_count`` in
-    that case.
+    that case. ``expected_count`` (``min_rate_per_minute`` scaled by
+    this file's own duration) is the same configured floor ``ok`` was
+    judged against, phrased as a count instead of a rate — only set
+    when both a duration and a rate threshold are available.
     """
 
     count: int
     duration_minutes: float | None
     rate_per_minute: float | None
     ok: bool
+    expected_count: float | None = None
 
     def describe(self) -> str:
         if self.rate_per_minute is not None:
             return f"{self.count} in {self.duration_minutes:.1f} min ({self.rate_per_minute:.2f}/min)"
         return f"{self.count}"
+
+    def announce_text(self) -> str:
+        """Human-readable count summary for a routine Slack post."""
+        if self.expected_count is not None:
+            return (
+                f"{self.count} time(s) over {self.duration_minutes:.1f} min "
+                f"(expected >= {self.expected_count:.1f})"
+            )
+        if self.duration_minutes is not None:
+            return f"{self.count} time(s) over {self.duration_minutes:.1f} min"
+        return f"{self.count} time(s)"
 
 
 def check_variable(
@@ -165,12 +200,14 @@ def check_variable(
     if duration_minutes and duration_minutes > 0:
         rate_per_minute = count / duration_minutes
 
+    expected_count = None
     if rate_per_minute is not None and min_rate_per_minute is not None:
         ok = rate_per_minute >= min_rate_per_minute
+        expected_count = min_rate_per_minute * duration_minutes
     else:
         ok = count >= min_count
 
-    return CheckResult(count, duration_minutes, rate_per_minute, ok)
+    return CheckResult(count, duration_minutes, rate_per_minute, ok, expected_count)
 
 
 def _notify(
@@ -196,6 +233,37 @@ def _notify(
         logger.exception("Slack delivery failed for %s (%s)", glider, transition)
 
 
+def _announce_arrival(send: SendFn, glider: str, path: Path, size: int) -> None:
+    """Routine "a new file showed up in the mirror" post.
+
+    Fires as soon as the file is seen locally -- this component only
+    watches a directory (see the module docstring), so it cannot
+    honestly claim to have detected the zmodem transfer itself, only
+    that a new mirrored copy has appeared. Independent of whether the
+    file can actually be decoded (no cache-file dependency), so it
+    still fires even when the content check below can't run.
+    """
+    try:
+        send(f"{glider}: file received", f"`{path.name}` ({size} byte(s))")
+    except Exception:
+        logger.exception("Slack arrival announcement failed for %s", path.name)
+
+
+def _announce_content(
+    send: SendFn,
+    glider: str,
+    path: Path,
+    variable: str,
+    equals: float | None,
+    result: CheckResult,
+) -> None:
+    label = f"{variable} == {equals:g}" if equals is not None else variable
+    try:
+        send(f"{glider}: {path.name}", f"{label}: {result.announce_text()}")
+    except Exception:
+        logger.exception("Slack content announcement failed for %s", path.name)
+
+
 def scan_once(
     input_dir: Path,
     cache_dir: Path,
@@ -206,16 +274,56 @@ def scan_once(
     name_pattern: re.Pattern[str],
     threshold: int,
     send: SendFn | None,
+    announce: bool = False,
+    announce_min_bytes: int = 0,
+    min_bytes: int = 0,
 ) -> None:
-    """Check every not-yet-processed matching file in *input_dir*."""
+    """Check every not-yet-processed matching file in *input_dir*.
+
+    *min_bytes* fully exempts files smaller than this from the check:
+    not read, not counted toward the alert streak, not announced --
+    just marked processed and skipped, permanently. This is for real,
+    identifiable "nothing to report" files (e.g. small administrative
+    segments logged while a glider idles at the surface, which real
+    data shows essentially never carry the variable of interest) --
+    not for tolerating routine failures. Any file that clears this bar
+    and still fails the check is a real problem, not noise.
+
+    When *announce* is set (and *send* is configured), two routine
+    Slack posts go out per remaining new file, in sequence: arrival
+    (size, as soon as the file is seen) and then content (count/rate,
+    once read). These are independent of the alert/recovery mechanism
+    below -- routine visibility into what's arriving, not a health
+    signal -- so they fire on every checked file, healthy or not.
+    *announce_min_bytes* additionally trims routine Slack noise (only)
+    among files that still get checked; unlike *min_bytes* it has no
+    effect on the alert streak.
+    """
     already = glider_ledger.get(glider)
     seen = already.processed if already else frozenset()
     for path in sorted(input_dir.iterdir()):
         if not name_pattern.match(path.name) or path.name in seen:
             continue
+        size = path.stat().st_size
+        if size < min_bytes:
+            ledger_mod.mark_processed(glider_ledger, glider, path.name)
+            logger.info(
+                "%s: %d byte(s), below --min-bytes %d -- skipped",
+                path.name,
+                size,
+                min_bytes,
+            )
+            continue
+        worth_announcing = announce and send and size >= announce_min_bytes
+        if worth_announcing:
+            _announce_arrival(send, glider, path, size)
         result = check_variable(path, cache_dir, variable, **check_kwargs)
         if result is None:
             continue  # unreadable; retried next scan, not counted either way
+        if worth_announcing:
+            _announce_content(
+                send, glider, path, variable, check_kwargs.get("equals"), result
+            )
         transition = ledger_mod.record(
             glider_ledger, glider, path.name, result.ok, threshold
         )
@@ -297,6 +405,31 @@ def main() -> None:
         default=None,
         help="file containing the Slack webhook URL; omit to log transitions only",
     )
+    ap.add_argument(
+        "--announce",
+        action="store_true",
+        help="also post a routine Slack message per new file (arrival size, "
+        "then count/rate) -- independent of alert/recovery; noisy on a busy "
+        "glider, off by default",
+    )
+    ap.add_argument(
+        "--announce-min-bytes",
+        type=int,
+        default=0,
+        help="skip routine --announce messages (only) for files smaller than "
+        "this; the file is still fully checked and still counts toward "
+        "alert/recovery regardless (default: %(default)s, i.e. no filtering)",
+    )
+    ap.add_argument(
+        "--min-bytes",
+        type=int,
+        default=0,
+        help="fully exempt files smaller than this from the check -- not "
+        "read, not counted toward the alert streak, not announced; for "
+        "real, identifiable no-content files (e.g. small administrative "
+        "surface segments), not for tolerating routine failures "
+        "(default: %(default)s, i.e. no filtering)",
+    )
     args = ap.parse_args()
 
     input_dir = Path(args.input_dir)
@@ -336,6 +469,9 @@ def main() -> None:
                 name_pattern,
                 args.threshold,
                 send,
+                args.announce,
+                args.announce_min_bytes,
+                args.min_bytes,
             )
             ledger_mod.save(ledger_path, glider_ledger)
         except Exception:

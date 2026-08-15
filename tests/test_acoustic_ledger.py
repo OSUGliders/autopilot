@@ -58,6 +58,27 @@ def test_processed_dedup_tracked_per_glider():
     assert state["osu685"].processed == {"a.tbd"}
 
 
+def test_mark_processed_does_not_affect_alert_streak():
+    state: dict = {}
+    ledger.record(state, "osu685", "a.tbd", False, threshold=2)  # consecutive_empty=1
+    ledger.mark_processed(state, "osu685", "b.tbd")  # exempted small file
+    transition = ledger.record(state, "osu685", "c.tbd", False, threshold=2)
+
+    assert state["osu685"].processed == {"a.tbd", "b.tbd", "c.tbd"}
+    assert (
+        transition == "alert"
+    )  # streak: a.tbd, c.tbd -- b.tbd didn't reset or break it
+    assert state["osu685"].consecutive_empty == 2
+
+
+def test_mark_processed_creates_glider_entry():
+    state: dict = {}
+    ledger.mark_processed(state, "osu685", "a.tbd")
+    assert state["osu685"].processed == {"a.tbd"}
+    assert state["osu685"].consecutive_empty == 0
+    assert not state["osu685"].in_alert
+
+
 def test_save_and_load_round_trip(tmp_path):
     state: dict = {}
     ledger.record(state, "osu685", "a.tbd", False, threshold=2)
