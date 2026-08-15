@@ -1,0 +1,49 @@
+[Unit]
+Description=Acoustic-data watcher: %i tbd interrogation-rate check
+After=network-online.target sfmc-pull-new-downloads@%i.service
+Wants=network-online.target
+
+[Service]
+User=autopilot
+Group=glider_pilots
+UMask=0002
+WorkingDirectory=/srv/autopilot
+# dbdreader creates $HOME/.local/share/dbdreader at import time
+# (unrelated to --cache-dir, which is our own .cac repository) -- the
+# autopilot service account has no writable home.
+Environment=HOME=/srv/autopilot
+# sci_generic_k == 10 marks an interrogation-sent event. Everything
+# below was calibrated on real osu1267 data (367 tbd files, 08-03 to
+# 08-14) and is assumed fleet-wide; recalibrate per glider if a
+# mission's acoustic config differs (add a drop-in like
+# sfmc-pull-new-downloads@osusim.service.d/ rather than editing this
+# template):
+#
+# - Interrogations fire every ~5.42 min while ranging (p10-p90 of the
+#   real gap distribution: 5.41-5.43). --min-rate-per-minute 0.09 is
+#   half the baseline rate (x2 tolerance): catches spacing
+#   significantly greater than 5.42 min without flagging jitter.
+# - --min-bytes 1000: file sizes split cleanly -- small administrative
+#   surface segments top out at 647 bytes, next real size 1704; only 2
+#   of 198 files under the boundary ever held a k==10 event. These are
+#   fully exempted (not read, not counted, not announced).
+# - --threshold 1: with small files exempted there is no legitimate
+#   quiet period -- historical multi-hour zero-interrogation lulls were
+#   real failures pilots fixed by hand, so the first real-sized file
+#   that fails alerts immediately.
+ExecStart=/opt/autopilot/.venv/bin/autopilot-acoustic-watch \
+    --glider %i --extension tbd \
+    --input-dir /srv/autopilot/acoustic-raw/%i \
+    --cache-dir /srv/autopilot/acoustic-cache \
+    --variable sci_generic_k --equals 10 \
+    --duration-variable sci_m_present_time --min-rate-per-minute 0.09 \
+    --min-bytes 1000 \
+    --threshold 1 \
+    --ledger /srv/autopilot/acoustic-alert/%i-tbd.json \
+    --slack-webhook-url-file /etc/autopilot/slack_webhook_url \
+    --announce
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

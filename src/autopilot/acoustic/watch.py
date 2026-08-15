@@ -135,7 +135,7 @@ class CheckResult:
         """Human-readable count summary for a routine Slack post."""
         if self.expected_count is not None:
             return (
-                f"{self.count} time(s) over {self.duration_minutes:.1f} min "
+                f"{self.count} occurrences over {self.duration_minutes:.1f} min "
                 f"(expected >= {self.expected_count:.1f})"
             )
         if self.duration_minutes is not None:
@@ -244,7 +244,7 @@ def _announce_arrival(send: SendFn, glider: str, path: Path, size: int) -> None:
     still fires even when the content check below can't run.
     """
     try:
-        send(f"{glider}: file received", f"`{path.name}` ({size} byte(s))")
+        send(f"{glider}: file received", f"`{path.name}` {size} bytes")
     except Exception:
         logger.exception("Slack arrival announcement failed for %s", path.name)
 
@@ -443,6 +443,14 @@ def main() -> None:
         "surface segments), not for tolerating routine failures "
         "(default: %(default)s, i.e. no filtering)",
     )
+    ap.add_argument(
+        "--once",
+        action="store_true",
+        help="do a single scan and exit instead of polling forever -- with "
+        "--slack-webhook-url-file omitted, this silently absorbs an already-"
+        "mirrored backlog into the ledger so the long-running service only "
+        "ever alerts/announces on genuinely new files",
+    )
     args = ap.parse_args()
 
     input_dir = Path(args.input_dir)
@@ -496,6 +504,8 @@ def main() -> None:
             # retry next cycle, same as every other watcher in this
             # project.
             logger.exception("Scan failed; will retry")
+        if args.once:
+            return
         time.sleep(args.poll_seconds)
 
 

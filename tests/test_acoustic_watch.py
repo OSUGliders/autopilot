@@ -425,12 +425,12 @@ def test_announce_sends_arrival_then_content_in_order(input_dir, monkeypatch):
     arrival_subject, arrival_body = sent[0]
     assert arrival_subject == "osu685: file received"
     assert "osu685-2026-172-0-324.tbd" in arrival_body
-    assert "byte(s)" in arrival_body
+    assert "1313 bytes" in arrival_body  # the fixture's real size
 
     content_subject, content_body = sent[1]
     assert content_subject == "osu685: osu685-2026-172-0-324.tbd"
     assert "sci_generic_a == 20628" in content_body
-    assert "2 time(s)" in content_body
+    assert "2 occurrences" in content_body
     assert "expected >= 1.0" in content_body
 
 

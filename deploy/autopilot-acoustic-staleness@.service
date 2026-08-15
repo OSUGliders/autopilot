@@ -1,0 +1,31 @@
+[Unit]
+Description=Acoustic-data staleness detector: %i tbd vs sbd
+After=network-online.target sfmc-pull-new-downloads@%i.service
+Wants=network-online.target
+
+[Service]
+User=autopilot
+Group=glider_pilots
+UMask=0002
+WorkingDirectory=/srv/autopilot
+Environment=HOME=/srv/autopilot
+# Both extensions live in the same mirror dir (sfmc-pull-new-downloads
+# pulls every file type into one place) -- primary/corroboration only
+# differ by which extension they match within it. Alerts when no tbd
+# has arrived in --max-gap-minutes while sbd is still arriving within
+# --corroboration-window-minutes (glider calling in fine, science file
+# never offered -- the scenario that historically needed a manual
+# download); deliberately quiet when both go stale together (comms
+# outage / no surfacing, not a tbd-specific problem).
+ExecStart=/opt/autopilot/.venv/bin/autopilot-acoustic-staleness \
+    --glider %i \
+    --primary-dir /srv/autopilot/acoustic-raw/%i --primary-extension tbd \
+    --corroboration-dir /srv/autopilot/acoustic-raw/%i --corroboration-extension sbd \
+    --max-gap-minutes 120 --corroboration-window-minutes 60 \
+    --state /srv/autopilot/acoustic-alert/%i-staleness.json \
+    --slack-webhook-url-file /etc/autopilot/slack_webhook_url
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
