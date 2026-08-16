@@ -1,33 +1,65 @@
 #!/bin/sh
-# Publish the KML/KMZ output directory to a public GitHub repo, so
-# Google Earth's Network Link (and anyone else) can fetch the live
-# fleet view from anywhere -- not just the LAN the web dashboard lives
-# on.
+# Publish this machine's KML/KMZ outputs to the shared RIOT-kml repo.
 #
-# Expects a git working copy already cloned at $KML_REPO_DIR, with a
-# push-capable remote configured (a repo-scoped SSH deploy key with
-# write access is recommended -- see the README).  autopilot-ingest-
-# predictions writes tracks.kmz (and live_tracks.kml) directly into
-# this same directory via --kml-dir, so there is nothing to copy here.
+# Drop-in replacement for the old amend + force-push publisher. That
+# approach only works with a single writer: with several machines
+# pushing to the same branch, every force-push rewrites main and wipes
+# out the other machines' commits (and leaves them unable to push at
+# all). This version rebuilds on the current remote tip each cycle and
+# commits ONLY the files this machine owns, so writers can't clobber
+# each other. Never force-push from any machine, and never `git add -A`.
 #
-# Keeps history lean: amends the previous commit and force-pushes,
-# rather than growing one commit per ~10-minute cycle forever -- this
-# is a live snapshot, not something worth a full history of.
+# History grows by one commit per changed cycle. That is fine for a
+# campaign-length live repo; squash or re-clone after the IOP if it
+# bothers you.
+#
+# Expects a git working copy at $KML_REPO_DIR with a push-capable
+# remote. autopilot-ingest-predictions writes the OWN_FILES directly
+# into that directory via --kml-dir.
 set -eu
 
 : "${KML_REPO_DIR:?KML_REPO_DIR is not set}"
+BRANCH="${BRANCH:-main}"
+OWN_FILES="tracks.kmz live_tracks.kml"   # the ONLY files this machine commits
 
 cd "$KML_REPO_DIR"
-git add -A
 
-if git diff --cached --quiet; then
-    echo "No changes to publish"
-    exit 0
-fi
+# Stash this machine's freshly written outputs before resetting, since
+# reset --hard would revert them to the remote's older copies.
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT INT TERM
+for f in $OWN_FILES; do
+    [ -f "$f" ] && cp -p "$f" "$TMP/"
+done
 
-if git rev-parse HEAD >/dev/null 2>&1; then
-    git commit --amend --no-edit
-else
-    git commit -m "Live tracks"
-fi
-git push --force
+attempt=0
+while [ "$attempt" -lt 3 ]; do
+    attempt=$((attempt + 1))
+
+    if ! git fetch origin "$BRANCH"; then
+        echo "fetch failed (attempt $attempt/3)" >&2
+        sleep 5
+        continue
+    fi
+    git reset --hard "origin/$BRANCH" --quiet
+
+    for f in $OWN_FILES; do
+        [ -f "$TMP/$f" ] && cp -p "$TMP/$f" "$f"
+    done
+    git add -- $OWN_FILES
+
+    if git diff --cached --quiet; then
+        echo "No changes to publish"
+        exit 0
+    fi
+
+    git commit --quiet -m "Live tracks ($(date -u '+%Y-%m-%d %H:%MZ'))"
+    if git push origin "$BRANCH"; then
+        echo "Published"
+        exit 0
+    fi
+    echo "push rejected, likely raced another machine (attempt $attempt/3)" >&2
+done
+
+echo "publish failed after 3 attempts; will retry next cycle" >&2
+exit 1
