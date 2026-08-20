@@ -29,8 +29,7 @@ ExecStart=/opt/autopilot/.venv/bin/autopilot-acoustic-watch \
     --min-bytes 1000 \
     --threshold 1 \
     --ledger /srv/autopilot/acoustic-alert/%i-tbd.json \
-    --slack-webhook-url-file /etc/autopilot/slack_webhook_url \
-    --announce
+    --slack-webhook-url-file /etc/autopilot/slack_webhook_url
 Restart=on-failure
 RestartSec=30
 
