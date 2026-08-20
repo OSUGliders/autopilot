@@ -65,6 +65,7 @@ import logging
 import math
 import re
 import shutil
+import zipfile
 from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -193,12 +194,18 @@ def read_tracks(
     return tracks
 
 
+#: Default for write_track's max_source_age_h -- see its docstring.
+DEFAULT_MAX_SOURCE_AGE_H = 48.0
+
+
 def write_track(
     predictions_dir: Path,
     deployment: str,
     float_id: str,
     tracker: str,
     rows: list[tuple[datetime, float, float, str]],
+    max_source_age_h: float | None = DEFAULT_MAX_SOURCE_AGE_H,
+    now: datetime | None = None,
 ) -> Path | None:
     """Write one drifter_<created>.csv; None (with a warning) if unwritable.
 
@@ -212,6 +219,18 @@ def write_track(
     estimate underneath it is hours old, and FALLBACK would never fire.
     Using the data's own last-estimate time means age_h correctly
     grows for real when the feed actually goes stale.
+
+    ``max_source_age_h`` additionally skips the write entirely once
+    ``created`` is already older than this (``None`` disables the
+    check). This doesn't change the follower's own behavior -- a
+    frozen filename already ages correctly whether or not this keeps
+    rewriting it with identical content -- it just stops silently
+    re-publishing dead data forever: a clear "not writing" warning in
+    ingest's own log points straight at which (deployment, float,
+    tracker) feed has actually died, and the comparison plot for an
+    asset with every tracker this stale stops being needlessly
+    re-rendered too (write_comparison_plot only draws into directories
+    write_track actually wrote this cycle).
     """
     if not rows:
         logger.warning(
@@ -229,6 +248,18 @@ def write_track(
         )
         return None
     created = max(estimate_times)
+    if max_source_age_h is not None:
+        age_h = ((now or datetime.now(UTC)) - created).total_seconds() / 3600
+        if age_h > max_source_age_h:
+            logger.warning(
+                "%s/%s/%s: newest estimate is %.1f h old (max %.0f h); not writing",
+                deployment,
+                float_id,
+                tracker,
+                age_h,
+                max_source_age_h,
+            )
+            return None
     outdir = predictions_dir / _slug(deployment, float_id, tracker)
     outdir.mkdir(parents=True, exist_ok=True)
     path = outdir / f"drifter_{created:%Y%m%dT%H%M}.csv"
@@ -253,14 +284,23 @@ def _plot_comparison(
     worth trusting right now — is drawn as a large, outlined dot;
     earlier estimates are small so the eye goes straight to what's
     current instead of hunting along the line for the last point.
+
+    The title's "as of" time is the newest *estimate* row's own
+    timestamp across every tracker shown, not wall-clock render time —
+    same anchor as write_track's filename — so a plot rebuilt every
+    cycle from data that has actually stopped updating keeps showing
+    its true (aging) last-real-position time instead of always looking
+    freshly drawn.
     """
     fig, ax = plt.subplots(figsize=(10, 10))
     lats = []
+    estimate_times = []
     for tracker in sorted(by_tracker):
         rows = by_tracker[tracker]
         obs = [(lon, lat) for _, lat, lon, kind in rows if kind == "estimate"]
         pred = [(lon, lat) for _, lat, lon, kind in rows if kind == "prediction"]
         lats += [lat for _, lat, _, _ in rows]
+        estimate_times += [t for t, _, _, kind in rows if kind == "estimate"]
         color = None
         if obs:
             (line,) = ax.plot(*zip(*obs), "-", lw=1.3, label=tracker)
@@ -280,8 +320,12 @@ def _plot_comparison(
         ax.set_aspect(1 / math.cos(math.radians(sum(lats) / len(lats))))
     ax.set_xlabel("Longitude", fontsize=12)
     ax.set_ylabel("Latitude", fontsize=12)
+    if estimate_times:
+        as_of = f"as of {max(estimate_times).astimezone(UTC):%Y-%m-%d %H:%M} UTC"
+    else:
+        as_of = "no observed positions"
     ax.set_title(
-        f"{deployment} / {float_id}\n"
+        f"{deployment} / {float_id}  ({as_of})\n"
         "solid = observed (large dot = most recent)   dashed = forecast",
         fontsize=14,
     )
@@ -314,9 +358,6 @@ def write_comparison_plot(
         logger.exception("Comparison plot failed for %s/%s", deployment, float_id)
 
 
-# A small circle, not Earth's default oversized pushpin.
-_CIRCLE_ICON = "http://maps.google.com/mapfiles/kml/shapes/placemark_circle.png"
-
 # Trackers shown in the KMZ by default: the fleet's every-tracker
 # comparison PNG stays as-is (all methods -- picking a tracker to fly
 # on is a real decision), but that many overlapping lines is too
@@ -324,27 +365,33 @@ _CIRCLE_ICON = "http://maps.google.com/mapfiles/kml/shapes/placemark_circle.png"
 # --kml-trackers.
 DEFAULT_KML_TRACKERS = ("ekf", "ops", "pf_lag2h")
 
+# A small circle, not Earth's default oversized pushpin.
+_CIRCLE_ICON = "http://maps.google.com/mapfiles/kml/shapes/placemark_circle.png"
 
-def _style_track(
-    track, rgb: tuple[int, int, int], width: float, alpha: int, icon_scale: float
-) -> None:
-    """Thin line + small circle icon (shown as the gx:Track scrubs), name
-    hidden as a permanent map label (labelstyle scale 0) -- it still
-    shows as the info-balloon title on click.
+
+def _style_track(track, rgb: tuple[int, int, int], width: float, alpha: int) -> None:
+    """Thin line only -- no icon of its own.
+
+    A gx:Track has its own position icon, shown at its current point
+    even at rest (not just while the time slider is being scrubbed).
+    That duplicated the deliberate, informative markers this module
+    already places at the same spot -- the "most recent" marker, and
+    each forecast point's own marker -- as a second icon stacked on
+    top with no description of its own (a gx:Track carries no per-point
+    detail to show). Icon scale 0 hides it entirely; the markers
+    already carry the information it would have shown.
 
     A gx:Track's style is a StyleMap (normal/highlight pair), and
     Google Earth falls back to its default yellow pushpin for whichever
-    pair is left unset -- setting only normalstyle showed the intended
-    circle *and* a stray default pin stacked on top of it. Both pairs
-    get the identical style so nothing ever falls back.
+    pair is left unset -- setting only normalstyle showed a stray
+    default pin stacked on top too. Both pairs get the identical style
+    so nothing ever falls back.
     """
     color = simplekml.Color.rgb(*rgb, alpha)
     for style in (track.stylemap.normalstyle, track.stylemap.highlightstyle):
         style.linestyle.color = color
         style.linestyle.width = width
-        style.iconstyle.icon.href = _CIRCLE_ICON
-        style.iconstyle.scale = icon_scale
-        style.iconstyle.color = color
+        style.iconstyle.scale = 0
         style.labelstyle.scale = 0
 
 
@@ -381,10 +428,12 @@ def build_kmz(
     information at all.  gx:Track is also far more compact than one
     Placemark per row, which matters here: some tracks run to 1000+
     rows.  Full opacity for observed, lighter for forecast (KML has no
-    true dashed line style), and a bigger marker at the most recent
-    estimate.
+    true dashed line style). The track itself draws as a line only —
+    its own position icon is hidden (see :func:`_style_track`) so it
+    doesn't duplicate the deliberate markers below.
 
-    Forecast points additionally each get their own small, individually
+    A bigger marker sits at the most recent estimate, and forecast
+    points additionally each get their own small, individually
     clickable Placemark (a gx:Track has no per-point click target) —
     clicking one shows the asset id, predicted time (as both an
     absolute UTC time and a lead time from the last real estimate), and
@@ -436,7 +485,7 @@ def build_kmz(
                         ]
                     )
                     trk.newgxcoord([(lon, lat) for _, lat, lon in obs])
-                    _style_track(trk, rgb, width=1.2, alpha=255, icon_scale=0.5)
+                    _style_track(trk, rgb, width=1.2, alpha=255)
                 if pred:
                     label = "forecast" if obs else "forecast only"
                     trk = tracker_folder.newgxtrack(name=f"{tracker} {label}")
@@ -447,7 +496,7 @@ def build_kmz(
                         ]
                     )
                     trk.newgxcoord([(lon, lat) for _, lat, lon in pred])
-                    _style_track(trk, rgb, width=1.0, alpha=140, icon_scale=0.5)
+                    _style_track(trk, rgb, width=1.0, alpha=140)
                 last_obs = max(obs, key=lambda o: o[0]) if obs else None
                 last_t = last_obs[0] if last_obs else None
                 if last_obs is not None:
@@ -489,18 +538,37 @@ def build_kmz(
     return kml
 
 
+#: Zip entries need *some* date_time; a fixed one (rather than
+#: zipfile's default of "now") means two runs over identical track
+#: data produce a byte-identical .kmz -- autopilot-publish-kmz commits
+#: only when the file's bytes actually changed, and a wall-clock
+#: timestamp baked into the zip would make every single run look
+#: different even when nothing about the tracks did.
+_ZIP_FIXED_DATE = (1980, 1, 1, 0, 0, 0)
+
+
 def write_kmz(
     all_tracks: dict,
     kml_dir: Path,
     trackers: tuple[str, ...] | None = DEFAULT_KML_TRACKERS,
 ) -> Path | None:
-    """Best-effort: a KMZ bug must never block the CSV writes."""
+    """Best-effort: a KMZ bug must never block the CSV writes.
+
+    Writes the zip directly rather than using Kml.savekmz() -- that
+    method stamps its one entry with the current wall-clock time,
+    which made the file differ on every run even when the underlying
+    KML text was identical (see _ZIP_FIXED_DATE).
+    """
     if not all_tracks:
         return None
     try:
         kml_dir.mkdir(parents=True, exist_ok=True)
         path = kml_dir / "tracks.kmz"
-        build_kmz(all_tracks, trackers).savekmz(str(path))
+        kml_bytes = build_kmz(all_tracks, trackers).kml().encode("utf-8")
+        info = zipfile.ZipInfo("doc.kml", date_time=_ZIP_FIXED_DATE)
+        info.compress_type = zipfile.ZIP_DEFLATED
+        with zipfile.ZipFile(path, "w") as kmz:
+            kmz.writestr(info, kml_bytes)
         return path
     except Exception:
         logger.exception("KMZ generation failed")
@@ -533,8 +601,14 @@ def ingest(
     kml_dir: Path | None = None,
     kml_base_url: str | None = None,
     kml_trackers: tuple[str, ...] | None = DEFAULT_KML_TRACKERS,
+    max_source_age_h: float | None = DEFAULT_MAX_SOURCE_AGE_H,
+    now: datetime | None = None,
 ) -> int:
     """Convert every deployment file's tracks into prediction files.
+
+    ``now`` is forwarded to :func:`write_track` for the
+    ``max_source_age_h`` check (``None``: real wall-clock time) --
+    mainly so tests can pin it rather than depend on the real clock.
 
     Returns the number of (deployment, float, tracker) files written.
     """
@@ -547,7 +621,15 @@ def ingest(
         written_dirs: dict[tuple[str, str], list[Path]] = defaultdict(list)
         for (deployment, float_id, tracker), rows in tracks.items():
             by_asset[(deployment, float_id)][tracker] = rows
-            out = write_track(predictions_dir, deployment, float_id, tracker, rows)
+            out = write_track(
+                predictions_dir,
+                deployment,
+                float_id,
+                tracker,
+                rows,
+                max_source_age_h,
+                now,
+            )
             if out:
                 written += 1
                 written_dirs[(deployment, float_id)].append(out.parent)
@@ -595,17 +677,28 @@ def main() -> None:
         "%(default)s); 'all' draws every tracker present. Only affects the "
         "KMZ -- predictions and the comparison PNG always cover every tracker.",
     )
+    ap.add_argument(
+        "--max-source-age-h",
+        type=float,
+        default=DEFAULT_MAX_SOURCE_AGE_H,
+        help="skip (re)writing a (deployment, float, tracker)'s prediction "
+        "file once its newest real position is already older than this -- "
+        "avoids silently re-publishing dead upstream data forever "
+        "(default: %(default)s); 0 or negative disables the check",
+    )
     args = ap.parse_args()
 
     kml_trackers = (
         None if args.kml_trackers == "all" else tuple(args.kml_trackers.split(","))
     )
+    max_source_age_h = args.max_source_age_h if args.max_source_age_h > 0 else None
     n = ingest(
         Path(args.localization_dir),
         Path(args.predictions_dir),
         Path(args.kml_dir) if args.kml_dir else None,
         args.kml_base_url,
         kml_trackers,
+        max_source_age_h,
     )
     print(f"Wrote {n} prediction file(s)")
 

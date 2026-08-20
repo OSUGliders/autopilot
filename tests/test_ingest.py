@@ -8,6 +8,7 @@ from pathlib import Path
 
 from autopilot.follower import PredictedTrackFollower
 from autopilot.ingest import (
+    _plot_comparison,
     build_kmz,
     deployment_files,
     ingest,
@@ -77,7 +78,7 @@ def test_write_track_anchors_filename_on_last_estimate_not_wall_clock(tmp_path):
         (datetime(2026, 8, 7, 21, 18, 49, tzinfo=UTC), 33.614, -120.513, "prediction"),
     ]
 
-    path = write_track(tmp_path, "A1", "em10962", "ekf", rows)
+    path = write_track(tmp_path, "A1", "em10962", "ekf", rows, max_source_age_h=None)
 
     # Named for the last *estimate*, not the (later) prediction row and
     # not "now" — the write happens well after 19:18:49 in wall time.
@@ -105,13 +106,111 @@ def test_write_track_prediction_only_writes_nothing(tmp_path):
     assert write_track(tmp_path, "A1", "em10962", "ekf", rows) is None
 
 
+def test_write_track_skips_when_source_older_than_max_age(tmp_path):
+    """Once the newest real position is too old, stop silently
+    re-publishing it -- the follower's own staleness check would react
+    the same way regardless, but this avoids pointless writes and logs
+    a clear reason for which feed actually died."""
+    rows = [
+        (datetime(2026, 8, 7, 19, 18, 49, tzinfo=UTC), 33.620, -120.449, "estimate"),
+    ]
+    now = datetime(2026, 8, 10, 19, 18, 49, tzinfo=UTC)  # 72 h later
+
+    path = write_track(
+        tmp_path, "A1", "em10962", "ekf", rows, max_source_age_h=48.0, now=now
+    )
+
+    assert path is None
+    assert not (tmp_path / "A1_em10962_ekf").exists()
+
+
+def test_write_track_writes_when_within_max_age(tmp_path):
+    rows = [
+        (datetime(2026, 8, 7, 19, 18, 49, tzinfo=UTC), 33.620, -120.449, "estimate"),
+    ]
+    now = datetime(2026, 8, 9, 0, 18, 49, tzinfo=UTC)  # 29 h later
+
+    path = write_track(
+        tmp_path, "A1", "em10962", "ekf", rows, max_source_age_h=48.0, now=now
+    )
+
+    assert path is not None and path.exists()
+
+
+def test_write_track_none_disables_max_age_check(tmp_path):
+    rows = [
+        (datetime(2026, 8, 7, 19, 18, 49, tzinfo=UTC), 33.620, -120.449, "estimate"),
+    ]
+    now = datetime(2027, 1, 1, tzinfo=UTC)  # far in the future
+
+    path = write_track(
+        tmp_path, "A1", "em10962", "ekf", rows, max_source_age_h=None, now=now
+    )
+
+    assert path is not None and path.exists()
+
+
+def test_ingest_stale_asset_skips_csv_and_plot_but_not_fresher_ones(tmp_path):
+    """A per-(deployment, float, tracker) guard: a fully-dead asset in
+    an otherwise-live deployment file must not block a live one, and
+    its comparison plot must not be (re)written either --
+    write_comparison_plot only draws into dirs write_track actually
+    wrote this cycle, which is empty when every one of an asset's
+    trackers was too stale to write."""
+    loc = tmp_path / "localization"
+    loc.mkdir()
+    (loc / "A1_float_tracks_latest.csv").write_text(
+        "deployment,float,tracker,segment,time,lat,lon,std_east_m,std_north_m,kind,gliders\n"
+        "A1,dead,ekf,1,2026-08-07T00:00:00,10.0,-150.0,1.0,1.0,estimate,sl999\n"
+        "A1,fresh,ekf,1,2026-08-09T23:00:00,11.0,-151.0,1.0,1.0,estimate,sl999\n"
+    )
+    predictions = tmp_path / "predictions"
+    now = datetime(2026, 8, 10, 0, 0, 0, tzinfo=UTC)  # dead: 72h old, fresh: 1h old
+
+    n = ingest(loc, predictions, max_source_age_h=48.0, now=now)
+
+    assert n == 1
+    assert not (predictions / "A1_dead_ekf").exists()
+    assert (predictions / "A1_fresh_ekf" / "drifter_20260809T2300.csv").exists()
+    assert not (predictions / "A1_dead_ekf" / "tracks.png").exists()
+    assert (predictions / "A1_fresh_ekf" / "tracks.png").is_file()
+
+
+def test_plot_comparison_title_shows_data_time_not_render_time():
+    """The 'as of' time must come from the data's own last estimate,
+    not wall-clock render time -- otherwise a plot rebuilt every cycle
+    from dead data would always look freshly current."""
+    rows = {
+        "ekf": [
+            (datetime(2026, 8, 7, 19, 18, 49, tzinfo=UTC), 33.62, -120.45, "estimate"),
+        ]
+    }
+
+    fig = _plot_comparison("A1", "em10962", rows)
+
+    title = fig.axes[0].get_title()
+    assert "as of 2026-08-07 19:18 UTC" in title
+
+
+def test_plot_comparison_title_handles_no_observed_positions():
+    rows = {
+        "ekf": [
+            (datetime(2026, 8, 7, 21, 0, 0, tzinfo=UTC), 33.61, -120.51, "prediction"),
+        ]
+    }
+
+    fig = _plot_comparison("A1", "em10962", rows)
+
+    assert "no observed positions" in fig.axes[0].get_title()
+
+
 def test_ingest_writes_one_file_per_deployment_float_tracker(tmp_path):
     loc = tmp_path / "localization"
     loc.mkdir()
     shutil.copy(FIXTURE, loc / "A1_float_tracks_latest.csv")
     predictions = tmp_path / "predictions"
 
-    n = ingest(loc, predictions)
+    n = ingest(loc, predictions, max_source_age_h=None)
 
     # em10962: ekf, ops, pf; mlf95: ekf -> 4 combinations.
     assert n == 4
@@ -133,7 +232,7 @@ def test_ingest_writes_comparison_plot_into_every_tracker_dir(tmp_path):
     shutil.copy(FIXTURE, loc / "A1_float_tracks_latest.csv")
     predictions = tmp_path / "predictions"
 
-    ingest(loc, predictions)
+    ingest(loc, predictions, max_source_age_h=None)
 
     plots = [
         (predictions / f"A1_em10962_{tracker}" / "tracks.png")
@@ -161,7 +260,7 @@ def test_ingest_disambiguates_same_float_across_deployments(tmp_path):
     )
     predictions = tmp_path / "predictions"
 
-    ingest(loc, predictions)
+    ingest(loc, predictions, max_source_age_h=None)
 
     a1 = predictions / "A1_em10962_ekf" / "drifter_20260807T1918.csv"
     b1 = predictions / "B1_em10962_ekf" / "drifter_20260809T0000.csv"
@@ -178,7 +277,7 @@ def test_ingest_bad_file_does_not_touch_existing_predictions(tmp_path):
     loc.mkdir()
     shutil.copy(FIXTURE, loc / "A1_float_tracks_latest.csv")
     predictions = tmp_path / "predictions"
-    ingest(loc, predictions)
+    ingest(loc, predictions, max_source_age_h=None)
     good = predictions / "A1_em10962_ekf" / "drifter_20260807T1918.csv"
     assert good.exists()
     original = good.read_text()
@@ -256,25 +355,46 @@ def test_build_kmz_markers_hide_permanent_label():
             assert "<LabelStyle" in style and "<scale>0</scale>" in style
 
 
-def test_build_kmz_track_style_sets_normal_and_highlight():
-    """A gx:Track's StyleMap left with only normalstyle set makes
-    Google Earth fall back to its default pushpin for the highlight
-    pair, showing up stacked on the intended circle. Both pairs must
-    resolve to a real style with the circle icon."""
+def test_build_kmz_track_icon_hidden_on_both_style_pairs():
+    """A gx:Track's own position icon (shown at its current point even
+    at rest) would duplicate the deliberate, informative markers this
+    module places at the same spot -- with no description of its own,
+    it showed as a second, blank-info icon stacked on the real one.
+    Both StyleMap pairs (normal/highlight) must hide it (IconStyle
+    scale 0) -- leaving only one pair set would make Google Earth fall
+    back to its own default pushpin for the other instead of staying
+    hidden."""
     import re
 
     tracks = read_tracks(FIXTURE)
     xml = build_kmz(tracks).kml()
 
-    # Every StyleMap's normal and highlight pair must each point at a
-    # Style that actually sets the circle icon (not an empty fallback).
     style_by_id = dict(re.findall(r'<Style id="(\d+)">(.*?)</Style>', xml, re.S))
-    for pair_style_id in re.findall(r"<styleUrl>#(\d+)</styleUrl>", xml):
-        style_body = style_by_id.get(pair_style_id)
-        if style_body is None:
-            continue  # a Point's own direct style, not part of a StyleMap
-        if "<IconStyle" in style_body:
-            assert "placemark_circle.png" in style_body
+    track_styles = [body for body in style_by_id.values() if "<LineStyle" in body]
+    assert track_styles  # sanity: the fixture actually produced tracks
+    for body in track_styles:
+        icon_style = re.search(r"<IconStyle.*?</IconStyle>", body, re.S).group(0)
+        assert "<scale>0</scale>" in icon_style
+
+
+def test_build_kmz_recency_marker_shows_visible_circle_icon():
+    """Unlike the (now-hidden) track icon, the deliberate "most recent"
+    marker must still show a real, visible circle icon -- this is the
+    one icon per track that's supposed to remain."""
+    import re
+
+    tracks = read_tracks(FIXTURE)
+    xml = build_kmz(tracks).kml()
+
+    m = re.search(
+        r"<name>ekf \(most recent\)</name>.*?<styleUrl>#(\d+)</styleUrl>", xml, re.S
+    )
+    assert m is not None
+    style_by_id = dict(re.findall(r'<Style id="(\d+)">(.*?)</Style>', xml, re.S))
+    style_body = style_by_id[m.group(1)]
+    icon_style = re.search(r"<IconStyle.*?</IconStyle>", style_body, re.S).group(0)
+    assert "<scale>0</scale>" not in icon_style
+    assert "placemark_circle.png" in icon_style
 
 
 def test_build_kmz_recency_marker_includes_asset_id():
@@ -350,6 +470,41 @@ def test_write_kmz_produces_a_valid_zip_with_doc_kml(tmp_path):
 def test_write_kmz_empty_tracks_writes_nothing(tmp_path):
     assert write_kmz({}, tmp_path) is None
     assert not (tmp_path / "tracks.kmz").exists()
+
+
+def test_write_kmz_identical_data_produces_byte_identical_file(tmp_path):
+    """autopilot-publish-kmz skips its git commit when tracks.kmz is
+    byte-identical to what's already published -- Kml.savekmz() stamps
+    its zip entry with the current wall-clock time, which broke that
+    check on every single run regardless of whether the data actually
+    changed. Two separate builds from identical data must now match.
+
+    Kmlable's id="N" counter is a simplekml-internal global that only
+    resets across separate process invocations (which is how this
+    really runs in production, once per timer cycle) -- reset it by
+    hand here to isolate the property this test actually cares about.
+    """
+    from simplekml.base import Kmlable
+
+    tracks = read_tracks(FIXTURE)
+
+    Kmlable._globalid = 0
+    write_kmz(tracks, tmp_path / "run1")
+    Kmlable._globalid = 0
+    write_kmz(tracks, tmp_path / "run2")
+
+    b1 = (tmp_path / "run1" / "tracks.kmz").read_bytes()
+    b2 = (tmp_path / "run2" / "tracks.kmz").read_bytes()
+    assert b1 == b2
+
+
+def test_write_kmz_zip_entry_has_fixed_date(tmp_path):
+    tracks = read_tracks(FIXTURE)
+
+    write_kmz(tracks, tmp_path)
+
+    with zipfile.ZipFile(tmp_path / "tracks.kmz") as z:
+        assert z.infolist()[0].date_time == (1980, 1, 1, 0, 0, 0)
 
 
 def test_write_network_link_points_at_kmz_url(tmp_path):
