@@ -848,7 +848,21 @@ class PredictedTrackFollower(BaseFollower):
             fontsize=10,
             color="black" if state == "NORMAL" else "red",
         )
-        ax.legend(loc="best", fontsize=8)
+        # Below the axes, not "best" inside them -- with the title
+        # already occupying the top, an inside legend routinely covered
+        # real markers. Columns spread it wide instead of one tall
+        # block; capped at 4 so it doesn't stretch absurdly thin when
+        # only a few entries are present (fence/safe_point/drifter/
+        # waypoints are all optional, so the count varies).
+        handles, labels = ax.get_legend_handles_labels()
+        ax.legend(
+            handles,
+            labels,
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.15),
+            ncol=min(len(handles), 4),
+            fontsize=8,
+        )
         ax.grid(alpha=0.3)
 
         self.plot_dir.mkdir(parents=True, exist_ok=True)
